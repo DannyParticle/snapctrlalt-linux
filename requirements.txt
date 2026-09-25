@@ -1,0 +1,27 @@
+# SnapCtrlAlt Linux 运行依赖
+#
+# 这些包都由发行版提供（PyGObject / pycairo 用 pip 装容易和系统的 GTK 版本打架，
+# 所以推荐用系统包管理器）。下面同时给出 pip 名，便于虚拟环境里安装。
+#
+# Linux Mint / Ubuntu / Debian:
+#   sudo apt install python3-gi python3-gi-cairo python3-cairo python3-pil \
+#                    gir1.2-gtk-3.0 python3-xlib \
+#                    gir1.2-ayatanaappindicator3-0.1
+#
+# Fedora:
+#   sudo dnf install python3-gobject python3-cairo python3-pillow gtk3 python3-xlib \
+#                    libappindicator-gtk3
+#
+# Arch:
+#   sudo pacman -S python-gobject python-cairo python-pillow gtk3 python-xlib \
+#                  libayatana-appindicator
+
+PyGObject>=3.36      # gi.repository: Gtk 3 / Gdk 3 / GdkPixbuf / Pango / Notify
+pycairo>=1.18        # 覆盖层与工具栏绘制
+Pillow>=8.0          # 图像处理：马赛克、高斯模糊、PNG/JPEG 编解码
+python-xlib>=0.29    # X11 抓图、全局热键（XGrabKey）
+
+# 可选（按需）：
+#   gir1.2-ayatanaappindicator3-0.1   托盘图标（没有就退回 Gtk.StatusIcon）
+#   xdg-desktop-portal                纯 Wayland 会话下的抓图通道
+#   flameshot / spectacle / scrot     外部截图工具（可选的「优先调用」模式）

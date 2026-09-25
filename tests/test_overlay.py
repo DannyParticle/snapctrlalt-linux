@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""界面回归测试（对标 Windows 版 test_ui.py）。
+
+不开真窗口：把 ``ShotOverlay.PRESENT`` 关掉后驱动真实的覆盖层对象，跑完整的
+「框选 → 标注 → 渲染 → 导出 → 存盘 → 复制」链路，逐项断言。
+
+    python3 tests/test_overlay.py
+"""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk  # noqa: E402
+
+from PIL import Image, ImageChops  # noqa: E402
+
+from snapctrlalt import overlay as ov  # noqa: E402
+
+RESULTS: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> bool:
+    RESULTS.append((name, bool(ok), detail))
+    print(f"  {'✓' if ok else '✗'} {name}" + (f"  —— {detail}" if detail else ""))
+    return bool(ok)
+
+
+class FakeApp:
+    """只实现覆盖层用得到的那几个接口。"""
+
+    def __init__(self, tmp: Path) -> None:
+        self.tmp = tmp
+        self.cfg = {"after_capture": "copy", "copy_to_primary": False,
+                    "save_format": "png", "jpeg_quality": 95}
+        self.messages: list[str] = []
+        self.status: list[str] = []      # 覆盖层状态栏消息
+        self.saved: list[str] = []
+        self.pinned: list[Image.Image] = []
+
+    def save_image(self, img, silent=True):
+        p = self.tmp / "auto.png"
+        img.save(p)
+        self.saved.append(str(p))
+        return str(p)
+
+    def notify(self, msg):
+        self.messages.append(msg)
+
+    def ask_save_path(self, parent=None):
+        return str(self.tmp / "asked.png")
+
+    def write_image(self, img, path):
+        Image.open  # noqa: B018
+        img.save(path)
+        self.saved.append(str(path))
+
+    def pin_image(self, img):
+        self.pinned.append(img)
+
+    def set_clipboard_hint(self):
+        pass
+
+
+class TestOverlay(ov.ShotOverlay):
+    PRESENT = False
+
+
+def make_screen(w: int, h: int, scale: int = 1) -> Image.Image:
+    """有明确色块的假截图：便于断言「画上去的东西确实变了像素」。"""
+    img = Image.new("RGB", (w * scale, h * scale), (240, 240, 245))
+    px = img.load()
+    for y in range(img.height):
+        for x in range(img.width):
+            if (x // (40 * scale) + y // (40 * scale)) % 2 == 0:
+                px[x, y] = (40, 60, 90)
+    return img
+
+
+def diff_bbox(a: Image.Image, b: Image.Image):
+    return ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox()
+
+
+def new_overlay(app: FakeApp, w=800, h=600, scale=1) -> TestOverlay:
+    img = make_screen(w, h, scale)
+    return TestOverlay(app, img, (0, 0, img.width, img.height),
+                       on_close=lambda r: None, scale=scale,
+                       status_cb=app.status.append)
+
+
+# ---------------------------------------------------------------- 用例
+
+
+def test_selection_flow(app: FakeApp) -> None:
+    print("\n[1] 框选流程")
+    o = new_overlay(app)
+    check("未框选时 sel 为空", o.sel is None)
+    check("初始为选择态", o.mode == "select" and o.tool == ov.T_SELECT)
+
+    # 模拟按下 -> 拖动 -> 松开（覆盖层内部把坐标换算成图像像素）
+    o._drag = {"kind": "select", "start": (100.0, 100.0), "cur": (100.0, 100.0),
+               "preview": True}
+    o._on_motion(o.win, _FakeEvent(x=200, y=180))
+    check("拖动中选区随之更新", o.sel is not None and o.sel[2] == 200)
+    o._on_release(o.win, _FakeEvent(x=400, y=300, button=1))
+    check("松开后进入标注态", o.mode == "draw", f"sel={o.sel}")
+    check("选区尺寸正确", o.sel == (100.0, 100.0, 400.0, 300.0), str(o.sel))
+    o._layout_toolbar(o.disp_w, o.disp_h)
+    check("工具栏已排布", len(o._buttons) > 10, f"{len(o._buttons)} 个按钮")
+    check("工具自动切到矩形", o.tool == ov.T_RECT, str(o.tool))
+
+    # 选区外按下 = 重新框选（QQ 行为）
+    o._on_press(o.win, _FakeEvent(x=700, y=550, button=1))
+    check("选区外按下可重新框选", o.mode == "select" and o.sel is None)
+    o._drag = None
+
+    # 双击 = 整屏
+    o._on_press(o.win, _FakeEvent(x=10, y=10, button=1, double=True))
+    check("双击选中整屏", o.sel == (0.0, 0.0, 800.0, 600.0), str(o.sel))
+    o.win.destroy()
+
+
+def test_result_matches_selection(app: FakeApp) -> None:
+    print("\n[2] 导出尺寸与选区一致")
+    for scale in (1, 2):
+        o = new_overlay(app, 800, 600, scale)
+        o.sel = (100.0, 50.0, 300.0, 250.0)
+        img = o.render_result()
+        want = (200 * scale, 200 * scale)
+        check(f"x{scale} 导出尺寸 = 选区×缩放 {want}", img.size == want, str(img.size))
+        base = o.screen.crop((100 * scale, 50 * scale, 300 * scale, 250 * scale))
+        check(f"x{scale} 未标注时与原始画面一致", diff_bbox(img, base) is None)
+        o.win.destroy()
+
+
+def test_each_tool(app: FakeApp) -> None:
+    print("\n[3] 各标注工具都真的画上去了")
+    cases = [
+        ("矩形", ov.T_RECT, {"tool": ov.T_RECT, "box": (150.0, 120.0, 320.0, 260.0),
+                            "color": "#ff3b30", "width": 4}),
+        ("椭圆", ov.T_ELLIPSE, {"tool": ov.T_ELLIPSE, "box": (150.0, 120.0, 320.0, 260.0),
+                               "color": "#007aff", "width": 4}),
+        ("箭头", ov.T_ARROW, {"tool": ov.T_ARROW, "p0": (140.0, 140.0),
+                             "p1": (330.0, 270.0), "color": "#34c759", "width": 4}),
+        ("画笔", ov.T_PEN, {"tool": ov.T_PEN,
+                           "points": [(140.0 + i * 6, 150.0 + (i % 8) * 8) for i in range(30)],
+                           "color": "#000000", "width": 4}),
+        ("荧光笔", ov.T_HIGHLIGHT, {"tool": ov.T_HIGHLIGHT,
+                                   "points": [(140.0 + i * 6, 200.0) for i in range(30)],
+                                   "color": "#ffcc00", "width": 6}),
+        ("文字", ov.T_TEXT, {"tool": ov.T_TEXT, "xy": (160.0, 200.0), "text": "测试文字 ABC",
+                            "color": "#ffffff", "size": 28.0}),
+        ("序号", ov.T_SEQ, {"tool": ov.T_SEQ, "xy": (250.0, 180.0), "n": 1,
+                           "color": "#ff3b30", "size": 22.0}),
+        ("马赛克", ov.T_MOSAIC, {"tool": ov.T_MOSAIC, "box": (160.0, 140.0, 300.0, 240.0),
+                                "color": "#000000", "width": 8}),
+        ("模糊", ov.T_BLUR, {"tool": ov.T_BLUR, "box": (160.0, 140.0, 300.0, 240.0),
+                            "color": "#000000", "width": 8}),
+    ]
+    for name, _kind, shape in cases:
+        o = new_overlay(app, 800, 600, 1)
+        o.sel = (100.0, 100.0, 400.0, 320.0)
+        base = o.render_result()
+        o.shapes = [dict(shape)]
+        out = o.render_result()
+        bb = diff_bbox(out, base)
+        check(f"{name}：像素确实被改动", bb is not None, f"改动区域 {bb}")
+        o.win.destroy()
+
+
+def test_undo_redo_clear(app: FakeApp) -> None:
+    print("\n[4] 撤销 / 重做 / 清空")
+    o = new_overlay(app)
+    o.sel = (100.0, 100.0, 400.0, 320.0)
+    clean = o.render_result()
+    o.shapes.append({"tool": ov.T_RECT, "box": (150.0, 150.0, 300.0, 250.0),
+                     "color": "#ff3b30", "width": 4})
+    drawn = o.render_result()
+    check("加标注后画面变化", diff_bbox(drawn, clean) is not None)
+
+    o.undo()
+    check("撤销后形状清空", o.shapes == [])
+    check("撤销结果回到原始画面", diff_bbox(o.render_result(), clean) is None)
+    o.redo()
+    check("重做后形状回来", len(o.shapes) == 1)
+    check("重做结果与标注后一致", diff_bbox(o.render_result(), drawn) is None)
+    o.clear()
+    check("清空后无残留", o.shapes == [] and diff_bbox(o.render_result(), clean) is None)
+    o.win.destroy()
+
+
+def test_text_entry_flow(app: FakeApp) -> None:
+    print("\n[5] 文字工具（真实 Gtk.Entry 落字）")
+    o = new_overlay(app)
+    o.sel = (100.0, 100.0, 500.0, 400.0)
+    before = o.render_result()
+    o._set_tool(ov.T_TEXT)
+    o._start_text(200.0, 200.0)
+    check("输入框已弹出", o._text_entry is not None)
+    o._text_entry.set_text("SnapCtrlAlt")
+    o._commit_text()
+    check("提交后形状入列", len(o.shapes) == 1 and o.shapes[0]["text"] == "SnapCtrlAlt")
+    check("输入框已销毁", o._text_entry is None)
+    after = o.render_result()
+    check("文字渲染到画面上", diff_bbox(after, before) is not None)
+
+    # 空文本不应该产生标注
+    o._start_text(220.0, 220.0)
+    o._text_entry.set_text("   ")
+    o._commit_text()
+    check("空白文字被忽略", len(o.shapes) == 1)
+    o.win.destroy()
+
+
+def test_clip_inside_selection(app: FakeApp) -> None:
+    print("\n[6] 标注被裁在选区内")
+    o = new_overlay(app)
+    o.sel = (200.0, 200.0, 400.0, 400.0)
+    # 一个远远超出选区的矩形：左上角落在选区内，右下角在选区外
+    o.shapes = [{"tool": ov.T_RECT, "box": (250.0, 250.0, 900.0, 900.0),
+                 "color": "#ff0000", "width": 6}]
+    out = o.render_result()
+    check("越界标注不改变导出尺寸", out.size == (200, 200), str(out.size))
+
+    # 参照：同一个矩形提前裁到选区边界
+    o2 = new_overlay(app)
+    o2.sel = (200.0, 200.0, 400.0, 400.0)
+    o2.shapes = [{"tool": ov.T_RECT, "box": (250.0, 250.0, 400.0, 400.0),
+                  "color": "#ff0000", "width": 6}]
+    want = o2.render_result()
+    bb = diff_bbox(out, want)
+    # 差异只允许出现在贴着裁切线的那一圈（描边被裁切时的抗锯齿），
+    # 内部必须逐像素一致 —— 等价于「选区外的部分没有画进来」。
+    inner_same = True
+    if bb:
+        for y in range(60, 190):
+            for x in range(60, 190):
+                if out.getpixel((x, y)) != want.getpixel((x, y)):
+                    inner_same = False
+                    break
+            if not inner_same:
+                break
+    check("选区内部与裁剪后重画逐像素一致", inner_same, f"差异区域 {bb}")
+    check("差异只出现在裁切边缘", bb is None or (bb[0] >= 45 and bb[1] >= 45),
+          f"差异区域 {bb}")
+
+    # 只画在选区外的东西不应该出现在结果里
+    o3 = new_overlay(app)
+    o3.sel = (200.0, 200.0, 400.0, 400.0)
+    clean = o3.render_result()
+    o3.shapes = [{"tool": ov.T_RECT, "box": (500.0, 500.0, 600.0, 600.0),
+                  "color": "#ff0000", "width": 6}]
+    check("完全在选区外的标注不影响结果",
+          diff_bbox(o3.render_result(), clean) is None)
+    for x in (o, o2, o3):
+        x.win.destroy()
+
+
+def test_scroll_width_and_tools(app: FakeApp) -> None:
+    print("\n[7] 滚轮线宽 / 工具切换")
+    o = new_overlay(app)
+    o.sel = (100.0, 100.0, 400.0, 300.0)
+    o._set_tool(ov.T_PEN)
+    w0 = o.width
+    o._on_scroll(o.win, _FakeEvent(direction="up"))
+    check("滚轮放大线宽", o.width >= w0, f"{w0} -> {o.width}")
+    for _ in range(5):
+        o._on_scroll(o.win, _FakeEvent(direction="down"))
+    check("线宽有下限", o.width == ov.WIDTHS[0], str(o.width))
+
+    o._set_tool(ov.T_PICKER)
+    o._on_press(o.win, _FakeEvent(x=120, y=120, button=1))
+    check("取色后自动切回矩形", o.tool == ov.T_RECT, str(o.tool))
+    check("取到的颜色是合法 hex", o.color.startswith("#") and len(o.color) == 7, o.color)
+    o.win.destroy()
+
+
+def test_handles_and_move(app: FakeApp) -> None:
+    print("\n[8] 手柄缩放 / 整体平移")
+    o = new_overlay(app)
+    o.sel = (100.0, 100.0, 400.0, 300.0)
+    o._set_tool(ov.T_SELECT)
+    h = o._handle_at(100.0, 100.0)
+    check("左上角手柄可命中", h == "nw", str(h))
+    o._drag = {"kind": "resize", "handle": "se", "start": (400.0, 300.0),
+               "orig": o.sel}
+    o._apply_resize(500.0, 400.0)
+    o._drag = None
+    check("拖手柄改变选区", o.sel == (100.0, 100.0, 500.0, 400.0), str(o.sel))
+
+    o._drag = {"kind": "move", "start": (200.0, 200.0), "orig": o.sel}
+    o._apply_move(250.0, 220.0)
+    o._drag = None
+    check("选区整体平移", o.sel == (150.0, 120.0, 550.0, 420.0), str(o.sel))
+
+    o._drag = {"kind": "move", "start": (200.0, 200.0), "orig": o.sel}
+    o._apply_move(-900.0, -900.0)
+    o._drag = None
+    check("平移被钳制在屏幕内", o.sel[0] >= 0 and o.sel[1] >= 0, str(o.sel))
+    o.win.destroy()
+
+
+def test_persist_and_finish(app: FakeApp) -> None:
+    print("\n[9] 保存 / 完成（走真实存盘与剪贴板）")
+    o = new_overlay(app)
+    o.sel = (100.0, 100.0, 260.0, 220.0)
+    o.shapes = [{"tool": ov.T_RECT, "box": (120.0, 120.0, 240.0, 200.0),
+                 "color": "#ff3b30", "width": 4}]
+    o.save()
+    p = Path(app.tmp / "asked.png")
+    check("另存为写出了文件", p.is_file(), str(p))
+    if p.is_file():
+        saved = Image.open(p)
+        check("存盘尺寸与选区一致", saved.size == (160, 120), str(saved.size))
+
+    app.cfg["after_capture"] = "copy"
+    o2 = new_overlay(app)
+    o2.sel = (0.0, 0.0, 120.0, 90.0)
+    o2.finish()
+    check("完成时给出了状态提示",
+          any("复制" in m or "剪贴板" in m for m in app.status),
+          str(app.status[-1:]))
+    try:
+        from snapctrlalt import clipboard_linux
+
+        clipboard_linux.pump(200)
+        got = clipboard_linux.read_clipboard_image()
+        check("剪贴板里能读回图像", got is not None and got.size == (120, 90),
+              str(got.size) if got else "None")
+    except Exception as e:  # noqa: BLE001
+        check("剪贴板里能读回图像", False, str(e))
+
+    app.cfg["after_capture"] = "copy_save"
+    o3 = new_overlay(app)
+    o3.sel = (0.0, 0.0, 100.0, 80.0)
+    n_before = len(app.saved)
+    o3.finish()
+    check("完成后自动存了一份", len(app.saved) > n_before, str(app.saved[-1:]))
+    o.win.destroy()
+
+
+def test_pin(app: FakeApp) -> None:
+    print("\n[10] 贴图")
+    o = new_overlay(app)
+    o.sel = (50.0, 50.0, 250.0, 200.0)
+    o.pin()
+    check("贴图请求把结果交给了应用层", len(app.pinned) == 1,
+          str(app.pinned[0].size) if app.pinned else "无")
+    if app.pinned:
+        check("贴图内容尺寸正确", app.pinned[0].size == (200, 150), str(app.pinned[0].size))
+    o.win.destroy()
+
+
+def test_cancel(app: FakeApp) -> None:
+    print("\n[11] 取消")
+    reasons: list[str] = []
+    img = make_screen(400, 300)
+    o = TestOverlay(app, img, (0, 0, img.width, img.height),
+                    on_close=reasons.append, scale=1)
+    o.sel = (10.0, 10.0, 100.0, 100.0)
+    o.cancel()
+    check("关闭回调收到 cancel", reasons == ["cancel"], str(reasons))
+    check("取消后窗口标记为已关闭", o._closed is True)
+    app.cfg["after_capture"] = "copy"
+
+
+class _FakeEvent:
+    """够用的假事件对象（覆盖层只读这几个字段）。"""
+
+    def __init__(self, x: int = 0, y: int = 0, button: int = 0,
+                 double: bool = False, direction: str = "up") -> None:
+        import gi as _gi
+
+        _gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk
+
+        self.x = float(x)
+        self.y = float(y)
+        self.x_root = float(x)
+        self.y_root = float(y)
+        self.button = button
+        self.type = (Gdk.EventType.DOUBLE_BUTTON_PRESS if double
+                     else Gdk.EventType.BUTTON_PRESS)
+        self.direction = (Gdk.ScrollDirection.UP if direction == "up"
+                          else Gdk.ScrollDirection.DOWN)
+        self.state = Gdk.ModifierType(0)
+        self.keyval = 0
+
+
+def main() -> int:
+    tmp = Path(tempfile.mkdtemp(prefix="snapctrlalt-test-"))
+    app = FakeApp(tmp)
+    print(f"SnapCtrlAlt Linux 界面回归测试（临时目录 {tmp}）")
+    # 覆盖层构造需要 GTK 初始化
+    Gtk.init_check(sys.argv[:1])
+
+    for fn in (test_selection_flow, test_result_matches_selection, test_each_tool,
+               test_undo_redo_clear, test_text_entry_flow, test_clip_inside_selection,
+               test_scroll_width_and_tools, test_handles_and_move,
+               test_persist_and_finish, test_pin, test_cancel):
+        try:
+            fn(app)
+        except Exception:  # noqa: BLE001
+            import traceback
+
+            RESULTS.append((fn.__name__, False, "异常"))
+            print(f"  ✗ {fn.__name__} 抛异常\n{traceback.format_exc()}")
+
+    passed = sum(1 for _n, ok, _d in RESULTS if ok)
+    total = len(RESULTS)
+    print("\n" + "=" * 60)
+    print(f"通过 {passed}/{total}")
+    failed = [n for n, ok, _d in RESULTS if not ok]
+    if failed:
+        print("失败项：" + "、".join(failed))
+    return 0 if passed == total else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

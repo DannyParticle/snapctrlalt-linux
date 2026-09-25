@@ -1,0 +1,32 @@
+[Desktop Entry]
+Type=Application
+Version=1.1
+Name=SnapCtrlAlt
+Name[zh_CN]=截图工具
+GenericName=Screenshot Tool
+GenericName[zh_CN]=截图工具
+Comment=Hotkey screenshot with annotation, straight to the clipboard
+Comment[zh_CN]=按快捷键截图、框选标注后直接进剪贴板
+Exec=snapctrlalt
+TryExec=snapctrlalt
+Icon=snapctrlalt
+Terminal=false
+Categories=Graphics;X-Screenshot;
+Keywords=screenshot;capture;snip;annotate;shot;
+Keywords[zh_CN]=截图;截屏;标注;贴图;
+StartupNotify=false
+StartupWMClass=snapctrlalt
+X-GNOME-UsesNotifications=true
+Actions=Capture;Settings;
+
+[Desktop Action Capture]
+Name=Capture now
+Name[zh_CN]=立即截图
+Exec=snapctrlalt --once
+Icon=snapctrlalt
+
+[Desktop Action Settings]
+Name=Settings
+Name[zh_CN]=设置
+Exec=snapctrlalt --settings
+Icon=snapctrlalt

@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""SnapCtrlAlt 命令行入口（deb / install.sh 安装后使用）。
+
+    snapctrlalt              托盘常驻，按 Ctrl+Alt+D 截图
+    snapctrlalt --once       只截一次，截完退出（适合绑桌面环境的快捷键）
+    snapctrlalt --settings   打开设置
+    snapctrlalt --selftest   基础自检，退出码 0 为通过
+    snapctrlalt --perf       帧耗时基准
+
+从源码目录直接跑也可以（会自动把 ../src 放进 sys.path）：
+
+    bin/snapctrlalt --once
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+# GTK 的缩放会同时影响事件坐标、窗口分配和抓图尺寸；把覆盖层固定在设备像素
+# 尺度上，坐标链就只剩「根像素 → 抓图像素」一次整数换算，不会再有隐藏缩放。
+# 必须在 import gi / 初始化 GTK 之前设置。
+os.environ.setdefault("GDK_SCALE", "1")
+os.environ.setdefault("GDK_DPI_SCALE", "1")
+
+_SRC = Path(__file__).resolve().parent.parent / "src"
+if _SRC.is_dir():                      # 源码目录运行时使用
+    sys.path.insert(0, str(_SRC))
+
+try:
+    from snapctrlalt.snap import main
+except ImportError as exc:  # pragma: no cover - 依赖缺失时给出可执行的提示
+    sys.stderr.write(
+        f"无法加载 SnapCtrlAlt：{exc}\n\n"
+        "请先安装运行依赖：\n"
+        "  sudo apt install python3-gi python3-gi-cairo python3-cairo python3-pil \\\n"
+        "                   gir1.2-gtk-3.0 python3-xlib\n"
+    )
+    raise SystemExit(1) from exc
+
+if __name__ == "__main__":
+    sys.exit(main())
