@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 SOCK = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/{os.getuid()}")) / "snapctrlalt.sock"
 WINDOW_TITLE = "SnapCtrlAlt 截图"
@@ -122,7 +122,7 @@ def main() -> int:
     log = (tmp / "app.log").open("w")
     env = dict(os.environ, SNAP_SCALE="", XDG_CONFIG_HOME=str(cfg_home))
     proc = subprocess.Popen(
-        [sys.executable, str(ROOT / "snap.py")],
+        [sys.executable, str(ROOT / "bin" / "snapctrlalt")],
         stdout=log, stderr=subprocess.STDOUT, env=env, cwd=str(ROOT),
     )
     print(f"已启动 snap.py（pid {proc.pid}），日志 {tmp / 'app.log'}")

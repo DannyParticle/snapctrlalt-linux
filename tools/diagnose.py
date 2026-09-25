@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 OK = "✓"
 NO = "✗"
@@ -129,6 +129,34 @@ def main() -> int:
                                " —— 可用 --once 绑桌面快捷键")
     print()
 
+    print("[坐标标定]")
+    try:
+        import gi as _gi
+
+        _gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk as _Gtk
+
+        _Gtk.init_check(sys.argv[:1])
+        from snapctrlalt import geometry as geo_mod
+
+        info = capture.virtual_screen_bounds()
+        img, real = capture.grab_full_screen(info)
+        ge = geo_mod.measure((img.width, img.height), gdk_scale=0)
+        for ln in ge.describe().splitlines():
+            print(f"    {ln}")
+        problems = ge.check()
+        if problems:
+            for pr in problems:
+                line(f"警告：{pr}", NO)
+        else:
+            line("标定自检", OK, "无异常")
+        gdk_scale = os.environ.get("GDK_SCALE", "未设置")
+        line("GDK_SCALE", OK if gdk_scale == "1" else WARN,
+             f"{gdk_scale}（建议为 1：覆盖层坐标依赖它固定在设备像素）")
+    except Exception as e:  # noqa: BLE001
+        line("坐标标定", NO, f"{type(e).__name__}: {e}")
+    print()
+
     print("[配置与自启]")
     from snapctrlalt import settings
 
@@ -141,8 +169,11 @@ def main() -> int:
     print()
 
     print("[桌面集成]")
-    for rel in ("snapctrlalt.desktop", "assets/snapctrlalt.svg",
-                "assets/snapctrlalt-tray.png", "snapctrlalt.sh"):
+    for rel in ("share/applications/snapctrlalt.desktop",
+                "share/icons/hicolor/scalable/apps/snapctrlalt.svg",
+                "share/icons/hicolor/22x22/apps/snapctrlalt.png",
+                "bin/snapctrlalt", "snapctrlalt.sh",
+                "packaging/build-deb.sh"):
         p = ROOT / rel
         line(rel, OK if p.is_file() else WARN, "存在" if p.is_file() else "缺失")
     print()

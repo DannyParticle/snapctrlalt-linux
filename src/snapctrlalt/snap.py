@@ -34,6 +34,7 @@ from PIL import Image  # noqa: E402
 
 from . import __version__  # noqa: E402
 from . import capture_linux as capture  # noqa: E402
+from . import geometry  # noqa: E402
 from . import clipboard_linux, notify_linux, overlay as overlay_mod, pin_window  # noqa: E402
 from . import settings as app_settings  # noqa: E402
 from .hotkey_linux import HotkeyManager  # noqa: E402
@@ -357,58 +358,27 @@ class App:
             self.notify(msg)
             self._show_error(msg)
             return
-        scale = self._measure_coord_scale(img, boxes)
-        log(f"抓图完成 {img.width}×{img.height}（{time.perf_counter() - then:.2f}s，"
-            f"坐标缩放 {scale}）")
-        self._open_overlay(img, boxes, scale)
+        geo = geometry.measure((img.width, img.height), gdk_scale=self._gdk_scale())
+        log(f"抓图完成 {img.width}×{img.height}（{time.perf_counter() - then:.2f}s）")
+        log("坐标标定 " + geo.describe().replace("\n", "\n         "))
+        for problem in geo.check():
+            log(f"坐标警告：{problem}")
+        self._open_overlay(img, boxes, geo)
 
-    def _measure_coord_scale(self, img: Image.Image, boxes) -> int:
-        """求「GTK 事件坐标 → 抓图像素」的倍数。
-
-        HiDPI 下这三个尺寸可以两两不同（实测本机：X11 根窗口 2880×1800、
-        GTK 事件坐标范围 2880、抓到的图 5760×3600），靠 GTK 的 scale factor
-        反推会算错，所以先用 X11 的真实根窗口几何把它标定出来，GTK 没起来时
-        再退回顾数比例。
-        """
-        env = os.environ.get("SNAP_SCALE", "").strip()
-        if env.isdigit() and int(env) > 0:
-            return int(env)
+    @staticmethod
+    def _gdk_scale() -> int:
+        """GTK 自己报的缩放，仅用于日志与 `--selftest` 对照，不参与换算。"""
         try:
-            gw, gh = capture.root_geometry()
-            ratio = img.width / float(gw)
-            cand = int(round(ratio))
-            if cand >= 1 and abs(ratio - cand) < 0.15:
-                return cand
-            print(f"[抓图] 坐标缩放不是整数（{ratio:.2f}），取整为 {max(1, cand)}")
-            return max(1, cand)
-        except Exception as e:  # noqa: BLE001
-            print(f"[抓图] 读不到 X11 根窗口尺寸（{e}），退回显示器几何推算")
-        return self._guess_scale(img.width)
-
-    def _guess_scale(self, img_w: int) -> int:
-        """物理像素 / GTK 逻辑像素：覆盖层靠它把逻辑坐标换算成图像像素。"""
-        env = os.environ.get("SNAP_SCALE", "").strip()
-        if env.isdigit() and int(env) > 0:
-            return int(env)
-        try:
-            disp = Gdk.Display.get_default()
-            if disp is None:
-                return 1
-            mon = disp.get_primary_monitor() or disp.get_monitor(0)
-            if mon is None:
-                return 1
-            geo = mon.get_geometry()
-            if geo.width <= 0:
-                return 1
-            ratio = img_w / float(geo.width)
-            for cand in (1, 2, 3, 4):
-                if abs(ratio - cand) < 0.25:
-                    return cand
-            return 1
+            w = Gtk.Window(type=Gtk.WindowType.POPUP)
+            w.realize()
+            gw = w.get_window()
+            scale = int(gw.get_scale_factor()) if gw is not None else 0
+            w.destroy()
+            return scale
         except Exception:  # noqa: BLE001
-            return 1
+            return 0
 
-    def _open_overlay(self, img: Image.Image, boxes, scale: int) -> None:
+    def _open_overlay(self, img: Image.Image, boxes, geo) -> None:
         if self.overlay is not None:
             try:
                 self.overlay.cancel()
@@ -419,7 +389,7 @@ class App:
             self.overlay = ShotOverlay(
                 app=self, screen_img=img, screen_box=boxes.box,
                 on_close=self._on_overlay_close, status_cb=self._status,
-                scale=scale, logical_size=self._logical_screen_size(),
+                geo=geo, logical_size=self._logical_screen_size(),
             )
         except Exception as e:  # noqa: BLE001
             self._shot_busy = False
@@ -862,6 +832,7 @@ def selftest() -> int:
     rc = 0
     rc |= _check("配置读写", _check_settings)
     rc |= _check("屏幕与抓图", capture.selftest)
+    rc |= _check("坐标标定", _geometry_selftest)
     rc |= _check("剪贴板", clipboard_linux.selftest)
     rc |= _check("全局热键", _hotkey_selftest)
     rc |= _check("托盘", _tray_selftest)
@@ -885,6 +856,24 @@ def _check_settings() -> int:
     cfg = app_settings.load_settings()
     path = app_settings.config_path()
     print(f"[自检] 配置：通过（{path}，{len(cfg)} 项）")
+    return 0
+
+
+def _geometry_selftest() -> int:
+    """标定 + 指针实测：把「事件坐标 → 根坐标」这条链验证一遍。"""
+    from . import geometry as geo_mod
+
+    info = capture.virtual_screen_bounds()
+    img, real = capture.grab_full_screen(info)
+    ge = geo_mod.measure((img.width, img.height), gdk_scale=App._gdk_scale())
+    print("[自检] 坐标标定：" + ge.describe().replace("\n", "\n           "))
+    problems = ge.check()
+    for p in problems:
+        print(f"[自检] 坐标警告：{p}")
+    env_scale = os.environ.get("GDK_SCALE", "未设置")
+    print(f"[自检] GDK_SCALE={env_scale}（覆盖层要求固定在 1，避免窗口被额外缩放）")
+    if ge.win_w != ge.root_w:
+        return 1
     return 0
 
 
@@ -928,12 +917,12 @@ def _perf() -> int:
     try:
         info = capture.virtual_screen_bounds()
         img, real = capture.grab_full_screen(info)
-        scale = App(cfg={})._guess_scale(img.width)
-        logical_w = max(1, img.width // max(1, scale))
-        logical_h = max(1, img.height // max(1, scale))
-        print(f"实际抓图 {img.width}×{img.height}，屏幕逻辑尺寸约 {logical_w}×{logical_h}")
+        geo = geometry.measure((img.width, img.height), gdk_scale=App._gdk_scale())
+        scale = int(round(geo.zoom_x)) or 1
+        print(f"实际抓图 {img.width}×{img.height}，根窗口 {geo.root_w}×{geo.root_h}"
+              f"（缩放 x{scale}）")
         return perf.main([sys.argv[0], str(img.width), str(img.height), str(scale),
-                          str(logical_w), str(logical_h)])
+                          str(geo.root_w), str(geo.root_h)])
     except Exception as e:  # noqa: BLE001
         print(f"无法取得真实屏幕尺寸（{e}），改用 1920×1080 @1x 估算")
         return perf.main([sys.argv[0], "1920", "1080", "1"])

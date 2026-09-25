@@ -116,56 +116,78 @@ class Geometry:
     # ---------------------------------------------------------------- 自证
 
     def apply_pointer_check(self, event_xy, root_xy, tol: float = 2.0) -> bool:
-        """用「事件坐标 vs 根指针坐标」这对实测值修正映射。
+        """用「GTK 事件坐标 vs Xlib 根指针坐标」这对实测值修正映射。
 
-        返回是否发生了变化（发生变化时应当记日志并重绘）。
+        模型：``root = event * scale + offset``。修正策略必须**保守**，否则一次
+        异常采样就会把好的标定带坏：
+
+        * 单个样本之间的差只当作读数噪声（窗口还没定下来时为 0），
+          **不据此改任何东西**，只记录；
+        * 只有当两个样本在 x / y 上跨度都超过 120 像素、且都能被同一个比例
+          解释时，才认定存在缩放并采用拟合结果；
+        * 比例被修正过之后，偏移必须重新拟合（``offset = mean(root - e*scale)``），
+          而不是照抄某一点，避免比例与平移互相污染。
         """
-        ex, ey = event_xy
+        ex, ey = float(event_xy[0]), float(event_xy[1])
         gx, gy = root_xy
         if gx is None or gy is None:
             return False
-        changed = False
-
-        # 偏移：事件坐标被整体平移了（窗口原点不在 0,0 / 被合成器移动）
-        if abs((ex + self.ptr_offset_x) - gx) > tol:
-            self.ptr_offset_x = gx - ex
-            changed = True
-        if abs((ey + self.ptr_offset_y) - gy) > tol:
-            self.ptr_offset_y = gy - ey
-            changed = True
-
-        # 缩放：事件坐标被 GTK 缩放过（显示器分数缩放 / 窗口被缩放）
-        # 用两个足够分开的采样点才能定出比例，单点只能定偏移，故这里只在
-        # 已有历史样本时做最小二乘式修正。
-        self._update_scale_sample(ex, ey, gx, gy, tol)
-        if changed:
-            self.notes.append(
-                f"指针自证修正：事件({ex:.0f},{ey:.0f}) 根({gx},{gy}) "
-                f"→ offset=({self.ptr_offset_x:.1f},{self.ptr_offset_y:.1f}) "
-                f"scale=({self.ptr_scale_x:.3f},{self.ptr_scale_y:.3f})")
-        return changed
-
-    def _update_scale_sample(self, ex, ey, gx, gy, tol) -> None:
         if not hasattr(self, "_samples"):
             self._samples: list[tuple[float, float, float, float]] = []
-        self._samples.append((ex, ey, gx, gy))
-        del self._samples[:-8]
-        # 需要一对在 x / y 上相距够远的样本才谈得上估比例
-        for sx, sy, sgx, sgy in self._samples[:-1]:
-            if abs(ex - sx) > 80 and abs(gx - sgx) > 80:
-                k = (gx - sgx) / (ex - sx)
-                if k > 0 and abs(k - self.ptr_scale_x) > 0.01:
-                    self.ptr_scale_x = k
-                    self.verified = True
-            if abs(ey - sy) > 80 and abs(gy - sgy) > 80:
-                k = (gy - sgy) / (ey - sy)
-                if k > 0 and abs(k - self.ptr_scale_y) > 0.01:
-                    self.ptr_scale_y = k
-                    self.verified = True
-        # 比例修好之后，偏移按最新样本重算，避免两个未知量互相污染
-        self.ptr_offset_x = gx - ex * self.ptr_scale_x
-        self.ptr_offset_y = gy - ey * self.ptr_scale_y
-        del tol
+        self._samples.append((ex, ey, float(gx), float(gy)))
+        del self._samples[:-10]
+
+        changed = False
+        sx = sy = None
+        for px, py, pgx, pgy in self._samples[:-1]:
+            if sx is None and abs(ex - px) > 120 and abs(gx - pgx) > 120:
+                sx = (gx - pgx) / (ex - px)
+            if sy is None and abs(ey - py) > 120 and abs(gy - pgy) > 120:
+                sy = (gy - pgy) / (ey - py)
+
+        def _usable(k) -> bool:
+            """配对样本给出的比例是否可信 *且确实不等于 1*。
+
+            1.0 不算「有缩放证据」：事件坐标本来就是根坐标时，配对样本必然
+            得到 1.0，这时候应当去修正平移，而不是把 1.0 当成缩放结论。
+            """
+            return k is not None and 0.5 <= k <= 3.0 and abs(k - 1.0) > 0.02
+
+        # --- 缩放：只有跨距足够大的配对样本才能定比例 ---
+        if _usable(sx) and abs(sx - self.ptr_scale_x) > 0.005:
+            self.ptr_scale_x = sx
+            self.verified = True
+            changed = True
+        if _usable(sy) and abs(sy - self.ptr_scale_y) > 0.005:
+            self.ptr_scale_y = sy
+            self.verified = True
+            changed = True
+        scale_trusted = self.verified or not (_usable(sx) or _usable(sy))
+
+        matched = abs((ex * self.ptr_scale_x + self.ptr_offset_x) - gx) <= tol and \
+            abs((ey * self.ptr_scale_y + self.ptr_offset_y) - gy) <= tol
+
+        # --- 平移：单点即可判定，但必须有两个以上样本、且当前比例可信时才改，
+        #     否则测试脚手架里的一次异常读数就会把标定带坏 ---
+        if scale_trusted and not matched and len(self._samples) >= 2:
+            ox = sum(g - e * self.ptr_scale_x
+                     for e, _y, g, _gy in self._samples) / len(self._samples)
+            oy = sum(gy2 - ey2 * self.ptr_scale_y
+                     for _x, ey2, _gx, gy2 in self._samples) / len(self._samples)
+            if abs(ox - self.ptr_offset_x) > tol or abs(oy - self.ptr_offset_y) > tol:
+                self.ptr_offset_x, self.ptr_offset_y = ox, oy
+                changed = True
+                self.verified = True
+        elif not matched and len(self._samples) < 2:
+            self.notes.append(
+                f"指针读数差异：事件({ex:.0f},{ey:.0f}) vs 根({gx},{gy})（样本不足，暂不修正）")
+
+        if changed:
+            self.notes.append(
+                f"指针自证修正：scale=({self.ptr_scale_x:.4f},{self.ptr_scale_y:.4f}) "
+                f"offset=({self.ptr_offset_x:.2f},{self.ptr_offset_y:.2f})"
+                f"（样本 {len(self._samples)} 个）")
+        return changed
 
     # ---------------------------------------------------------------- 报告
 

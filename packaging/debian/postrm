@@ -1,0 +1,34 @@
+#!/bin/sh
+# Post-removal script for the snapctrlalt Debian package.
+#
+# Removes what the package itself may have left behind outside its own file
+# list -- the per-user autostart entry that the tray menu can create -- while
+# keeping the user's configuration and screenshots.
+
+set -e
+
+case "${1:-}" in
+    purge|remove)
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications || true
+        fi
+        # 通知仍然登录着的用户：把自启项去掉（配置与截图保留）
+        if command -v loginctl >/dev/null 2>&1; then
+            loginctl list-sessions --no-legend 2>/dev/null | while read -r _sid uid _rest; do
+                [ -n "$uid" ] || continue
+                home="$(getent passwd "$uid" | cut -d: -f6)"
+                [ -n "$home" ] || continue
+                rm -f "$home/.config/autostart/snapctrlalt.desktop" 2>/dev/null || true
+            done
+        fi
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

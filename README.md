@@ -44,8 +44,12 @@ Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴
 
 **Linux 特有的照顾**
 
-- **HiDPI**：X11 根窗口 2880×1800、抓图 5760×3600、GTK 窗口 1440×900 三层坐标系各不相同，
-  启动时按 X11 根几何**标定**坐标缩放，导出的是全分辨率原图，不做二次缩放
+- **HiDPI**：覆盖层固定在设备像素尺度运行（`GDK_SCALE=1`），让
+  **GTK 事件坐标 = 覆盖层窗口 = X11 根窗口 = 抓图像素** 四者同源，
+  坐标链上只剩一次整数换算，从根上消除「圈的位置和截的位置不一致」。
+  启动时还会用 Xlib 根指针对账 GTK 事件坐标，发现残留的平移/缩放就自动纠正并记日志；
+  万一你的环境仍有偏差，可用 `SNAP_SCALE` / `SNAP_OFFSET_X` / `SNAP_OFFSET_Y` 手动指定。
+  UI（工具栏/放大镜/手柄）另外按显示器缩放系数放大，因此坐标精确的同时界面也不缩水
 - **多显示器**：按 Xinerama / RandR 拼出虚拟屏并集，覆盖层铺满整块虚拟屏
 - **Wayland**：纯 Wayland 会话自动改走 XDG Desktop Portal（会弹一次系统授权框），
   抓到的图仍进同一套标注界面
@@ -55,22 +59,31 @@ Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴
 
 ## 安装与运行
 
-**免安装（推荐先试这个）**
+**Debian 包（推荐）**
+
+```bash
+./packaging/build-deb.sh                 # 产物在 dist/snapctrlalt_<版本>_all.deb
+sudo apt install ./dist/snapctrlalt_1.2.0_all.deb
+```
+
+装完在应用菜单里搜「截图工具」，或直接敲 `snapctrlalt`。
+**deb 装完默认不开机自启**，需要的话在托盘菜单里勾选「开机自启」。
+构建是可复现的（固定 `SOURCE_DATE_EPOCH`，同一份源码每次构建出的 deb 字节一致）。
+
+**免安装（源码目录直接跑）**
 
 ```bash
 git clone <本仓库> && cd snapctrlalt-linux
 ./snapctrlalt.sh            # 托盘常驻
 ```
 
-**安装到 ~/.local**
+**安装到 ~/.local（不用 root）**
 
 ```bash
 ./install.sh                # 图标 / 启动器 / 命令行入口
 ./install.sh --autostart    # 顺便开机自启
 ./install.sh --uninstall    # 卸载（保留配置）
 ```
-
-装完直接敲 `snapctrlalt`；也可以在应用菜单里搜「截图工具」。
 
 **依赖**
 
@@ -101,13 +114,15 @@ sudo pacman -S python-gobject python-cairo python-pillow gtk3 python-xlib \
 **从源码跑**
 
 ```bash
-python3 snap.py --selftest     # 不弹界面，基础自检，退出码 0 为通过
-python3 snap.py                # 托盘常驻
-python3 snap.py --once         # 只截一次，截完退出
-python3 snap.py --settings     # 打开设置
+./snapctrlalt.sh --selftest    # 不弹界面，基础自检（含坐标标定），退出码 0 为通过
+./snapctrlalt.sh               # 托盘常驻
+./snapctrlalt.sh --once        # 只截一次，截完退出
+./snapctrlalt.sh --settings    # 打开设置
 python3 tools/diagnose.py      # 环境诊断：这台机器能用哪些能力
 python3 tools/perf.py          # 帧耗时基准
 ```
+
+也可以直接用入口脚本：`bin/snapctrlalt --once`。
 
 ## 快捷键
 
@@ -149,19 +164,37 @@ Windows 版的 `config.json` 可以直接拿来用（`prefer_qq` / `qq_hotkey` �
 
 **便携模式**：在项目根目录放一个名为 `portable` 的空文件，配置就写在程序目录里。
 
+## 目录结构
+
+与 [oled-guard](https://github.com/DannyParticle/oled-guard-for-linux-made-by-dsh-) 同构：
+
+```
+src/snapctrlalt/          Python 包
+bin/snapctrlalt           命令行入口（固定 GDK_SCALE=1，deb 与源码通用）
+share/applications/       桌面启动器
+share/icons/hicolor/      各尺寸图标 + scalable SVG
+packaging/build-deb.sh    构建 deb（不依赖 debhelper，可复现）
+packaging/debian/         control / changelog / copyright / postinst / prerm / postrm
+tests/                    回归、坐标专项与端到端测试
+tools/                    make_icons / diagnose / perf
+install.sh                用户级安装（~/.local）
+snapctrlalt.sh            源码目录启动脚本
+```
+
 ## 模块
 
 | 文件 | 职责 | 对应 Windows 版 |
 |------|------|----------------|
-| `snapctrlalt/snap.py` | 入口、托盘常驻、热键分发、设置界面、单实例 IPC | `snap.py` |
-| `snapctrlalt/overlay.py` | 全屏覆盖层：选区、工具栏、标注渲染、放大镜、贴图触发 | `overlay.py` |
-| `snapctrlalt/capture_linux.py` | 虚拟屏度量 + 抓图（GDK → Xlib → Portal 三级回落） | `capture.py` |
-| `snapctrlalt/hotkey_linux.py` | `XGrabKey` 全局热键，注册失败会提示 | `hotkey.py` |
-| `snapctrlalt/clipboard_linux.py` | GTK 剪贴板写位图 / 文本 | `clipboard_win.py` |
-| `snapctrlalt/tray_linux.py` | Ayatana AppIndicator 托盘（退回 StatusIcon） | `tray.py` |
-| `snapctrlalt/pin_window.py` | 贴图小窗 | —（Windows 版并入覆盖层） |
-| `snapctrlalt/notify_linux.py` | 桌面通知（DBus，退回 notify-send） | 托盘气泡 |
-| `snapctrlalt/settings.py` | JSON 配置（XDG）+ autostart .desktop | `settings.py` |
+| `src/snapctrlalt/snap.py` | 入口、托盘常驻、热键分发、设置界面、单实例 IPC | `snap.py` |
+| `src/snapctrlalt/geometry.py` | 坐标标定与指针自证（平移 + 缩放纠正） | —（Windows 版靠 DPI 感知） |
+| `src/snapctrlalt/overlay.py` | 全屏覆盖层：选区、工具栏、标注渲染、放大镜、贴图触发 | `overlay.py` |
+| `src/snapctrlalt/capture_linux.py` | 虚拟屏度量 + 抓图（GDK → Xlib → Portal 三级回落） | `capture.py` |
+| `src/snapctrlalt/hotkey_linux.py` | `XGrabKey` 全局热键，注册失败会提示 | `hotkey.py` |
+| `src/snapctrlalt/clipboard_linux.py` | GTK 剪贴板写位图 / 文本 | `clipboard_win.py` |
+| `src/snapctrlalt/tray_linux.py` | Ayatana AppIndicator 托盘（退回 StatusIcon） | `tray.py` |
+| `src/snapctrlalt/pin_window.py` | 贴图小窗 | —（Windows 版并入覆盖层） |
+| `src/snapctrlalt/notify_linux.py` | 桌面通知（DBus，退回 notify-send） | 托盘气泡 |
+| `src/snapctrlalt/settings.py` | JSON 配置（XDG）+ autostart .desktop | `settings.py` |
 | `tools/make_icons.py` | 用 Cairo 生成 SVG / PNG 图标（无外部素材） | `packaging/*.ico` |
 | `tools/diagnose.py` | 环境诊断 | — |
 | `tools/perf.py` | 帧耗时基准 | 测试脚本里的耗时统计 |
@@ -175,10 +208,16 @@ scrot / maim / ImageMagick `import`，命中就交给它；起不来则回落到
 
 ```bash
 python3 tests/test_overlay.py     # 界面回归：54 项，离屏跑真实覆盖层对象
+python3 tests/test_coords.py      # 坐标专项：24 项，含「框选==截取」逐像素验证
 python3 tests/test_gui_e2e.py     # 端到端：真窗口 + XTEST 真鼠标拖框 + 真剪贴板（约 20 秒）
-python3 snap.py --selftest        # 基础自检：配置 / 抓图 / 剪贴板 / 热键 / 托盘 / 渲染
-python3 snap.py --perf            # 用真实抓图尺寸测各交互路径帧耗时
+./snapctrlalt.sh --selftest       # 基础自检：配置 / 抓图 / 坐标标定 / 剪贴板 / 热键 / 托盘
+./snapctrlalt.sh --perf           # 用真实抓图尺寸测各交互路径帧耗时
+./packaging/build-deb.sh          # 构建 deb（构建前自动跑 overlay + coords 测试）
 ```
+
+`tests/test_coords.py` 是这次偏移问题的专用防护：它覆盖 1×/1.5×/2×/3× 各种
+「根 ↦ 抓图」倍率、指针自证的平移与缩放修正（含异常采样不得污染标定），
+并在真实抓图上做逐像素比对 + 全屏反查最佳匹配偏移，要求必须是 0。
 
 端到端测试会短暂接管鼠标（约 20 秒），跑完不留后台进程；它用隔离的
 `XDG_CONFIG_HOME`，不会动你的配置。

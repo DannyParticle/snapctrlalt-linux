@@ -28,6 +28,8 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango, PangoCairo  # noqa: 
 
 from PIL import Image, ImageFilter  # noqa: E402
 
+from . import geometry  # noqa: E402
+
 # ---------------------------------------------------------------- 常量
 
 T_SELECT = "select"
@@ -399,6 +401,58 @@ class _Button:
         return self.x, self.y, self.x + self.w, self.y + self.h
 
 
+def _detect_ui_scale(cfg: dict) -> float:
+    """UI 缩放系数：配置优先，其次按显示器 scale factor 自动取。"""
+    raw = str(cfg.get("ui_scale", "auto") or "auto").strip().lower()
+    if raw not in ("auto", ""):
+        try:
+            val = float(raw)
+            if 0.5 <= val <= 3.0:
+                return val
+        except ValueError:
+            pass
+    try:
+        from gi.repository import Gdk
+
+        disp = Gdk.Display.get_default()
+        if disp is None:
+            return 1.0
+        n = disp.get_n_monitors()
+        factor = max((disp.get_monitor(i).get_scale_factor() for i in range(n)), default=1)
+        # 覆盖层按物理像素绘制，在 HiDPI 面板上 UI 必须跟着放大才看得清：
+        # 12px 的字在 2880 宽的屏上等于 1080p 屏的 8px。取 2.0 让标签/提示
+        # 恢复到 1080p 屏上 12~16px 的观感。
+        return 2.0 if factor >= 2 else 1.0
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def _fallback_geometry(img_w: int, img_h: int, box=None, scale: int = 0):
+    """拿不到 X11 标定时的退化几何。
+
+    约定：画布（根像素）= ``screen_box`` 的宽高，缩放 = 抓图 / 画布。
+    这样：
+      * 设备像素模式（GDK_SCALE=1，抓图 = 根）→ 缩放 1.0，1:1；
+      * SDK 或测试里传入放大过的抓图（如 2 倍）→ 缩放 2.0，导出仍是放大图；
+      * 多显示器且根原点非 (0,0) 时，用 ``ptr_offset`` 把窗口坐标映射回根坐标。
+    """
+    from .geometry import Geometry
+
+    if box is not None:
+        bx, by, bw, bh = box
+        root_w, root_h = max(1, int(bw)), max(1, int(bh))
+    else:
+        bx = by = 0
+        root_w, root_h = max(1, int(img_w)), max(1, int(img_h))
+    if scale and scale > 1 and (img_w, img_h) == (root_w * scale, root_h * scale):
+        pass          # 抓图正好是 root 的整数倍，下面按实测尺寸算即可
+    return Geometry(img_w=int(img_w), img_h=int(img_h),
+                    root_w=root_w, root_h=root_h,
+                    win_x=int(bx), win_y=int(by),
+                    win_w=root_w, win_h=root_h,
+                    ptr_offset_x=float(bx), ptr_offset_y=float(by))
+
+
 class ShotOverlay:
     """全屏截图覆盖层。生命周期内独占一个 GTK 窗口。"""
 
@@ -413,6 +467,7 @@ class ShotOverlay:
         status_cb: Callable[[str], None] | None = None,
         scale: int = 1,
         logical_size: tuple[int, int] | None = None,
+        geo=None,
     ) -> None:
         self.app = app
         self.screen = screen_img
@@ -420,17 +475,24 @@ class ShotOverlay:
         self.origin = (screen_box[0], screen_box[1])
         self.on_close = on_close or (lambda reason: None)
         self.status_cb = status_cb or (lambda s: None)
-        self.scale = max(1, int(scale))
 
         self.img_w, self.img_h = screen_img.width, screen_img.height
-        # 画布坐标系 = GTK 事件坐标（X11 根像素）。抓图可能是它的 scale 倍
-        # （HiDPI 实测：事件 2880×1800、抓图 5760×3600、窗口分配 1440×900）。
-        # 按这个尺寸建一张画布，绘制时 1:1，不需要每帧重采样整屏；
-        # 窗口分配尺寸与它的比值就是显示侧的缩放比（见 _present_scale）。
-        self.cr_w = max(1, int(round(self.img_w / float(self.scale))))
-        self.cr_h = max(1, int(round(self.img_h / float(self.scale))))
+        # 坐标一律走 geometry：它给出「事件坐标 → 根坐标 → 抓图像素」这条链，
+        # 并能用 Xlib 根指针对账自证。没传进来时按「抓图 = 根像素」退化处理。
+        self.geo = (geo if geo is not None
+                    else _fallback_geometry(self.img_w, self.img_h, screen_box, scale))
+        # UI（工具栏 / 放大镜 / 手柄 / 提示）的显示缩放。
+        #
+        # 覆盖层固定在设备像素尺度（GDK_SCALE=1）换来的是「坐标绝不偏移」，
+        # 代价是在 HiDPI 屏上按 1 个物理像素画 UI 会显得很小。所以 UI 单独按
+        # 显示器的缩放系数放大 —— 它只作用于绘制，不参与任何坐标换算，
+        # 框选与截取的一致性不受影响。
+        self.ui_scale = _detect_ui_scale(getattr(app, "cfg", {}) or {})
+        # 画布坐标系 = X11 根像素（与 GTK 事件坐标同源，绘制 1:1 不重采样）
+        self.cr_w = max(1, int(self.geo.root_w))
+        self.cr_h = max(1, int(self.geo.root_h))
         disp_img = screen_img
-        if self.scale > 1:
+        if (self.cr_w, self.cr_h) != (self.img_w, self.img_h):
             disp_img = screen_img.resize((self.cr_w, self.cr_h), Image.LANCZOS)
         self.disp_surface = pil_to_surface(disp_img.convert("RGB"))
         # 全分辨率原图（放大镜取色 / 最终导出用）
@@ -464,7 +526,12 @@ class ShotOverlay:
         self._tb_key: tuple | None = None
         self._frames = 0
         self._frame_ms = 0.0
+        self._ptr_checked_at = 0.0
         self._focus_tries = 0
+        # 兜底自检：覆盖层必须在「设备像素」模式下运行（入口脚本设 GDK_SCALE=1），
+        # 否则窗口会被 GDK 再缩放一次，事件坐标与画布就不同源了。真出现这种情况
+        # 下面的分配尺寸检查会立刻报出来，并让指针自证去纠正。
+        self._scale_warned = False
         # 弹对话框 / 文字输入框时不要抢焦点，否则用户点不了、打不了字
         self._focus_guard = False
         self._finishing = False
@@ -636,6 +703,40 @@ class ShotOverlay:
             self.win.get_window().set_override_redirect(True)
         except Exception:  # noqa: BLE001
             pass
+        self._refresh_window_geometry()
+
+    def _refresh_window_geometry(self) -> None:
+        """把覆盖层窗口在根里的实测位置/尺寸写回标定。
+
+        窗口没铺满根窗口（被 WM 挪过 / 没真正全屏）时，事件坐标的原点就和根
+        原点不一致，这正是「框选位置 ≠ 截取位置」的一种成因，所以这里量一次
+        并留下记录。
+        """
+        try:
+            gw = self.win.get_window()
+            if gw is None:
+                return
+            geom = geometry.window_geometry(int(gw.get_xid()))
+            if not geom:
+                return
+            wx, wy, ww, wh = geom
+            self.geo.win_x, self.geo.win_y = wx, wy
+            self.geo.win_w, self.geo.win_h = ww, wh
+            if (wx, wy) != (0, 0) or (ww, wh) != (self.geo.root_w, self.geo.root_h):
+                self.geo.notes.append(
+                    f"覆盖层窗口实测 {ww}×{wh}+{wx}+{wy}，"
+                    f"根 {self.geo.root_w}×{self.geo.root_h}")
+                if not self._scale_warned:
+                    self._scale_warned = True
+                    print("[overlay] 警告：覆盖层窗口没有铺满 X11 根窗口，"
+                          "事件坐标与画布可能不同源（请确认以 GDK_SCALE=1 启动）")
+                    # 让分配尺寸反推一个更贴近现实的缩放，避免整屏错位
+                    if ww > 0 and abs(ww - self.geo.root_w) > 2:
+                        self.geo.notes.append(
+                            f"画布按窗口分配尺寸 {ww} 与根 {self.geo.root_w} 的比值"
+                            f"（{self.geo.root_w / ww:.3f}）留待指针自证修正")
+        except Exception as e:  # noqa: BLE001
+            print(f"[overlay] 读取窗口几何失败：{e}")
 
     def _redraw(self) -> None:
         if not self._closed:
@@ -656,13 +757,24 @@ class ShotOverlay:
         self._dim_key = key
         return surf
 
+    @property
+    def dev_scale(self) -> float:
+        """画布（根像素）→ 抓图像素 的倍数。
+
+        设备像素模式下就是 1.0；只有当抓图分辨率高于根窗口（例如 Xlib 拿到了
+        真实面板分辨率）时才不是 1。所有「图像像素」与「画布像素」的换算都走它。
+        """
+        return self.geo.zoom_x if abs(self.geo.zoom_x - 1.0) > 1e-6 else 1.0
+
     def _to_img(self, x: float, y: float) -> tuple[float, float]:
-        s = self.scale
-        return x * s, y * s
+        """画布（根像素）→ 抓图像素。"""
+        return self.geo.root_to_img(x, y)
 
     def _to_disp(self, x: float, y: float) -> tuple[float, float]:
-        s = self.scale
-        return x / s, y / s
+        """抓图像素 → 画布（根像素）。"""
+        zx = self.geo.zoom_x or 1.0
+        zy = self.geo.zoom_y or 1.0
+        return x / zx, y / zy
 
     # ------------------------------------------------------------ 绘制
 
@@ -690,7 +802,8 @@ class ShotOverlay:
             x1 = max(0.0, min(x1, self.cr_w))
             y0 = max(0.0, min(y0, self.cr_h))
             y1 = max(0.0, min(y1, self.cr_h))
-            region = (x0 * self.scale, y0 * self.scale, x1 * self.scale, y1 * self.scale)
+            region = (x0 * self.geo.zoom_x, y0 * self.geo.zoom_y,
+                      x1 * self.geo.zoom_x, y1 * self.geo.zoom_y)
             # 亮区：直接把冻结底图贴进选区（Cairo 裁切，比 Pillow 裁片快）
             cr.save()
             cr.rectangle(x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
@@ -713,12 +826,19 @@ class ShotOverlay:
             if self._drag and self._drag.get("preview"):
                 self._draw_preview(cr, self._drag)
 
+        # UI 层单独缩放：这里之后一律用 UI 单位绘制（不参与坐标换算）
+        us = self.ui_scale
+        cr.save()
+        if abs(us - 1.0) > 1e-6:
+            cr.scale(us, us)
+        uw, uh = w / us, h / us
         if sel is not None and self.mode == "draw":
-            self._draw_toolbar(cr, w, h)
+            self._draw_toolbar(cr, uw, uh)
         if sel is None and not self._drag and self._cursor[0] >= 0:
-            self._draw_magnifier(cr, w, h)
+            self._draw_magnifier(cr, uw, uh)
         if self._tip_text:
-            self._draw_tip(cr, w, h)
+            self._draw_tip(cr, uw, uh)
+        cr.restore()
         self._frames += 1
         self._frame_ms = (time.perf_counter() - t0) * 1000.0
         return False
@@ -775,7 +895,8 @@ class ShotOverlay:
 
     def _draw_size_label(self, cr, x0, y0, x1, y1) -> None:
         """QQ 风格尺寸标签：选区上方，越界自动落到下方。显示的是真实图像像素。"""
-        text = f"{int(round((x1 - x0) * self.scale))} × {int(round((y1 - y0) * self.scale))}"
+        text = (f"{int(round((x1 - x0) * self.geo.zoom_x))} × "
+                f"{int(round((y1 - y0) * self.geo.zoom_y))}")
         layout = PangoCairo.create_layout(cr)
         layout.set_font_description(_font(12))
         layout.set_text(text, -1)
@@ -820,7 +941,8 @@ class ShotOverlay:
     def _draw_shapes(self, cr, region=None) -> None:
         """绘制全部标注。``region`` 用图像像素给出（与 shape 里的坐标同一坐标系）。"""
         if region is not None:
-            region = tuple(v / float(self.scale) for v in region)
+            region = (region[0] / self.geo.zoom_x, region[1] / self.geo.zoom_y,
+                      region[2] / self.geo.zoom_x, region[3] / self.geo.zoom_y)
         for s in self.shapes:
             try:
                 self._draw_shape(cr, s, region)
@@ -830,8 +952,8 @@ class ShotOverlay:
     def _draw_shape(self, cr, s: dict, region=None) -> None:
         tool = s.get("tool")
         color = _rgba(s.get("color", self.color))
-        sc = float(self.scale)
-        lw = float(s.get("width", self.width)) / sc      # 物理线宽 -> 逻辑线宽
+        sc = float(self.dev_scale)
+        lw = float(s.get("width", self.width)) / sc      # 图像线宽 -> 画布线宽
 
         if tool in (T_MOSAIC, T_BLUR):
             box = _clip_box(s["box"], region) if region else s["box"]
@@ -858,7 +980,7 @@ class ShotOverlay:
                 surf = pil_to_surface(crop.convert("RGB"))
                 s["_surf"] = surf
                 s["_surf_box"] = (ix0, iy0, ix1, iy1)
-                s["_surf_scale"] = self.scale
+                s["_surf_scale"] = self.dev_scale
             cr.save()
             cr.rectangle(ix0 / sc, iy0 / sc, (ix1 - ix0) / sc, (iy1 - iy0) / sc)
             cr.clip()
@@ -952,7 +1074,7 @@ class ShotOverlay:
         tool = d.get("tool")
         if not tool:
             return
-        sc = float(self.scale)
+        sc = float(self.dev_scale)
         sx, sy = d["start"][0] / sc, d["start"][1] / sc
         cx, cy = d.get("cur", d["start"])
         cx, cy = cx / sc, cy / sc
@@ -1002,8 +1124,9 @@ class ShotOverlay:
     # ------------------------------------------------------------ 放大镜
 
     def _draw_magnifier(self, cr, dw, dh) -> None:
-        cx, cy = self._cursor
-        ix, iy = self._to_img(cx, cy)
+        # 进来的 dw/dh 与上下文都是 UI 单位，光标先换算过来
+        cx, cy = self._cursor[0] / self.ui_scale, self._cursor[1] / self.ui_scale
+        ix, iy = self._to_img(*self._cursor)
         px, py = int(ix), int(iy)
         half = MAG_SIZE // MAG_ZOOM // 2
         size = MAG_SIZE
@@ -1055,8 +1178,9 @@ class ShotOverlay:
         col = self.screen.getpixel((max(0, min(px, self.img_w - 1)),
                                     max(0, min(py, self.img_h - 1))))
         hexs = "#{:02X}{:02X}{:02X}".format(*col[:3])
-        coord = (f"{int(round(self.box[0] + ix / self.scale))},"
-                 f"{int(round(self.box[1] + iy / self.scale))}")
+        # 原始事件坐标与换算后的根坐标都留着：两者不等时一眼就能看出是偏移
+        coord = (f"{int(round(self.box[0] + ix / self.geo.zoom_x))},"
+                 f"{int(round(self.box[1] + iy / self.geo.zoom_y))}")
         cr.set_source_rgba(0.11, 0.11, 0.12, 0.92)
         cr.rectangle(mx, my + size, size, MAG_BAR)
         cr.fill()
@@ -1175,9 +1299,12 @@ class ShotOverlay:
         self._buttons = [b for g in groups for b in g]
 
     def _draw_toolbar(self, cr, dw, dh) -> None:
-        """工具栏整条缓存成一张 surface —— 悬停 / 拖动时只换位置贴图，不重画 15 个图标。"""
+        """工具栏；够大时整条缓存成一张 surface，悬停 / 拖动只换位置贴图。"""
         self._layout_toolbar(dw, dh)
         bx, by, bw, bh = self._tb_pos
+        if bw * bh <= 40000:          # 小条直接画，避免把「自适应缩放」烘进缓存
+            self._paint_toolbar(cr, bx, by, bw, bh)
+            return
         hover = self._hover
         key = (round(bx), round(by), bw, bh, self.tool, self.color,
                hover.kind if hover else "", hover.data if hover else "")
@@ -1189,10 +1316,8 @@ class ShotOverlay:
         cr.paint()
         cr.restore()
 
-    def _build_toolbar_surface(self, bx, by, bw, bh) -> cairo.Surface:
-        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32,
-                                  int(bx + bw) + 2, int(by + bh) + 2)
-        cr = cairo.Context(surf)
+    def _paint_toolbar(self, cr, bx, by, bw, bh) -> None:
+        """把工具栏画到当前上下文（坐标单位为 UI 单位）。"""
         cr.save()
         cr.set_operator(cairo.OPERATOR_OVER)
         self._rounded_rect(cr, bx, by, bw, bh, 8)
@@ -1256,11 +1381,20 @@ class ShotOverlay:
             cr.translate(b.x + (b.w - size) / 2.0, b.y + (b.h - size) / 2.0)
             draw_icon(cr, b.kind, size, ICON_ACTIVE if active else ICON_COLOR)
             cr.restore()
+
+    def _build_toolbar_surface(self, bx, by, bw, bh) -> cairo.Surface:
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32,
+                                  int(bx + bw) + 2, int(by + bh) + 2)
+        cr = cairo.Context(surf)
+        self._paint_toolbar(cr, bx, by, bw, bh)
         return surf
 
     def _button_at(self, x, y) -> _Button | None:
+        """x, y 是画布坐标；按钮矩形是 UI 单位。"""
+        us = self.ui_scale
+        ux, uy = x / us, y / us
         for b in self._buttons:
-            if b.hit(x, y):
+            if b.hit(ux, uy):
                 return b
         return None
 
@@ -1288,11 +1422,36 @@ class ShotOverlay:
     # ------------------------------------------------------------ 鼠标
 
     def _pos(self, event) -> tuple[float, float]:
-        return float(event.x), float(event.y)
+        """GTK 事件坐标 → 画布（根像素）坐标。
+
+        正常情况下 event.x/y 就是根坐标，这一步是恒等映射；一旦某些窗口管理器
+        或分数缩放让两者不同源，geometry 的指针自证会把修正补上。
+        """
+        return self.geo.ptr_to_root(float(event.x), float(event.y))
+
+    def _verify_pointer(self, event) -> None:
+        """用 Xlib 读到的根指针对账 GTK 事件坐标，发现不同源就地修正。
+
+        这是「框选位置 ≠ 截取位置」的兜底：只要两者被观测到不等，后续所有换算
+        都按实测修正后的映射走，并在日志里留下证据。
+        """
+        if self.geo.verified or self._closed:
+            return
+        now = time.time()
+        if now - self._ptr_checked_at < 1.0:
+            return
+        self._ptr_checked_at = now
+        truth = geometry.root_pointer()
+        if truth is None:
+            return
+        if self.geo.apply_pointer_check((float(event.x), float(event.y)), truth):
+            self.geo.verified = True
+            self.status_cb(f"已自动校正坐标：{self.geo.describe().splitlines()[-1].strip()}")
 
     def _on_motion(self, _w, event) -> bool:
         if self._closed:
             return False
+        self._verify_pointer(event)
         x, y = self._pos(event)
         self._cursor = (x, y)
         prev_hover = self._hover
@@ -1365,7 +1524,8 @@ class ShotOverlay:
 
         if self.tool == T_SEQ and self._in_sel(ix, iy):
             self.shapes.append({"tool": T_SEQ, "xy": (ix, iy), "n": self._seq_no,
-                                "color": self.color, "size": max(14, self.width * 5) * self.scale})
+                                "color": self.color,
+                                "size": max(14, self.width * 5) * self.dev_scale})
             self._seq_no += 1
             self.redo_stack.clear()
             self.status_cb(f"序号 {self._seq_no - 1}")
@@ -1412,14 +1572,14 @@ class ShotOverlay:
         if kind == "select":
             self.sel = _norm_box(*d["start"], ix, iy)
             x0, y0, x1, y1 = self.sel
-            if (x1 - x0) < 5 * self.scale and (y1 - y0) < 5 * self.scale:
+            if (x1 - x0) < 5 and (y1 - y0) < 5:
                 self.sel = None
                 self.mode = "select"
                 self.status_cb(_HINT_SELECT)
             else:
                 self.sel = (max(0.0, x0), max(0.0, y0),
-                            min(float(self.img_w), max(x1, x0 + 5 * self.scale)),
-                            min(float(self.img_h), max(y1, y0 + 5 * self.scale)))
+                            min(float(self.cr_w), max(x1, x0 + 5)),
+                            min(float(self.cr_h), max(y1, y0 + 5)))
                 self.mode = "draw"
                 self.tool = T_RECT if self.tool == T_SELECT else self.tool
                 self.status_cb("已选中区域 · 工具栏可标注 · Enter 复制并关闭")
@@ -1459,7 +1619,7 @@ class ShotOverlay:
         if not self.sel or self.tool != T_SELECT or self.mode != "draw":
             return None
         names = ["nw", "n", "ne", "e", "se", "s", "sw", "w"]
-        tol = HANDLE * self.scale
+        tol = float(HANDLE)
         for name, (hx, hy) in zip(names, self._handle_points(*self.sel)):
             if abs(ix - hx) <= tol and abs(iy - hy) <= tol:
                 return name
@@ -1507,7 +1667,7 @@ class ShotOverlay:
             shape = {"tool": tool, "box": bx, "color": d.get("color", self.color),
                      "width": d.get("width", self.width)}
         elif tool == T_ARROW:
-            if math.hypot(x1 - x0, y1 - y0) < 6 * self.scale:
+            if math.hypot(x1 - x0, y1 - y0) < 6 * self.dev_scale:
                 return
             shape = {"tool": tool, "p0": (x0, y0), "p1": (x1, y1),
                      "color": d.get("color", self.color), "width": d.get("width", self.width)}
@@ -1592,7 +1752,7 @@ class ShotOverlay:
         if self._text_entry is not None:
             self._commit_text()
         size = max(13, int(self.width * 5))
-        self._text_size = size * self.scale   # 存图像像素，绘制时 /scale
+        self._text_size = size * self.dev_scale   # 存图像像素，绘制时 /scale
         e = Gtk.Entry()
         e.set_has_frame(True)
         e.override_color(Gtk.StateFlags.NORMAL, _gdk_rgba(self.color))
@@ -1617,8 +1777,8 @@ class ShotOverlay:
         self._overlay_box.add_overlay(e)
         e.set_halign(Gtk.Align.START)
         e.set_valign(Gtk.Align.START)
-        e.set_margin_start(int(x))
-        e.set_margin_top(int(y))
+        e.set_margin_start(int(x / self.ui_scale))
+        e.set_margin_top(int(y / self.ui_scale))
         self._text_entry = e
         self._text_pos = self._to_img(x, y)
         self.win.show_all()
@@ -1776,12 +1936,7 @@ class ShotOverlay:
         """选区换算成全分辨率图像的像素矩形。"""
         if not self.sel:
             return 0, 0, self.img_w, self.img_h
-        x0, y0, x1, y1 = [v * self.scale for v in self.sel]
-        x0 = max(0, min(int(round(x0)), self.img_w - 1))
-        y0 = max(0, min(int(round(y0)), self.img_h - 1))
-        x1 = max(x0 + 1, min(int(round(x1)), self.img_w))
-        y1 = max(y0 + 1, min(int(round(y1)), self.img_h))
-        return x0, y0, x1, y1
+        return self.geo.rect_root_to_img(self.sel)
 
     def render_result(self) -> Image.Image:
         """把标注烧进画面，返回选区内的最终图像（全分辨率物理像素）。"""

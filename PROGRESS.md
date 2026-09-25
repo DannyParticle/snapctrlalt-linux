@@ -1,96 +1,81 @@
-# 进度存档 — 坐标偏移修复 + deb 打包
+# 进度存档 — 坐标偏移修复 + Debian 打包
 
-> 断点续作说明。最后更新：本次会话「先保存当前工作进度」时。
+> 断点续作说明。最后更新：1.2.0 完成时。
 
-## 一、当前状态
+## 一、状态：已完成 ✅
 
 | 项 | 状态 |
 |---|---|
-| 目录重构为 oled-guard 同构（`src/` `bin/` `share/` `packaging/`） | ✅ 已完成 |
-| 资源路径解析（`assets.py`，源码 / `~/.local` / deb 三种形态） | ✅ 已完成 |
-| 新入口 `bin/snapctrlalt`（固定 `GDK_SCALE=1`） | ✅ 已完成 |
-| 新启动脚本 `snapctrlalt.sh` | ✅ 已完成 |
-| `.gitignore` / `.gitattributes` | ✅ 已完成 |
-| `src/snapctrlalt/geometry.py`（标定 + 自证 + 纠正） | 🟡 已写，**尚未接入覆盖层** |
-| 覆盖层改用新坐标系 | ⬜ 未开始 |
-| `packaging/build-deb.sh` + `packaging/debian/*` | ⬜ 未开始 |
-| `install.sh` 适配新结构 | ⬜ 未开始 |
-| README / CHANGELOG 更新 | ⬜ 未开始 |
-| 回归测试适配新结构 | ⬜ 未开始（测试文件仍在 `tests/`，路径引用已失效） |
+| 目录重构为 oled-guard 同构（`src/` `bin/` `share/` `packaging/`） | ✅ |
+| 资源路径解析（`assets.py`，源码 / `~/.local` / deb 三种形态） | ✅ |
+| 坐标偏移修复（设备像素模型 + 运行时标定 + 指针自证） | ✅ |
+| UI 独立缩放（坐标精确的同时界面不缩水） | ✅ |
+| `packaging/build-deb.sh` + `packaging/debian/*` | ✅ 构建可复现 |
+| `install.sh` 适配新结构 | ✅ |
+| README / CHANGELOG 更新 | ✅ |
+| 回归 / 坐标专项 / 端到端测试 | ✅ 54 + 24 + 22 全通过 |
 
-**已知暂时损坏**：`tests/*.py`、`tools/perf.py`、`tools/diagnose.py` 里还有
-`ROOT/..`、`sys.path.insert(ROOT)` 这类旧布局假设，重构后需要一并改。
+产物：`dist/snapctrlalt_1.2.0_all.deb`（88K，installed 432 KiB，sha256 见构建输出）
 
-## 二、偏移问题的根因（已确认）
+## 二、偏移问题的根因与修法
 
 本机实测（Linux Mint / Cinnamon / X11）：
 
 | 量 | 不设 GDK_SCALE | 设 GDK_SCALE=1 |
 |---|---|---|
-| GTK 显示器逻辑几何 | 1440×900，scale=2 | 2880×1800，scale=1 |
-| 普通窗口 scale_factor | 2 | 1 |
-| `Gdk.pixbuf_get_from_window` 抓图 | **5760×3600** | 2880×1800 |
-| `Xlib` 抓图 | 2880×1800 | 2880×1800 |
-| X11 根窗口 | 2880×1800 | 2880×1800 |
+| GTK 显示器逻辑几何 | 1440×900（scale 2） | 2880×1800（scale 1） |
+| `Gdk.pixbuf_get_from_window` 抓图 | 5760×3600 | 2880×1800 |
+| Xlib 抓图 / X11 根窗口 | 2880×1800 | 2880×1800 |
 
-结论：
+真实像素是 2880×1800；5760×3600 是 GDK 按窗口 scale factor 虚拟放大的结果。
+覆盖层窗口的分配尺寸又受同一个缩放影响，于是「事件坐标 / 窗口分配 / 抓图尺寸」
+三者由**不同缩放口径**推导，任一处与假设不符就整体错位。
 
-1. **这台机器的真实像素就是 2880×1800**。原先的 5760×3600 不是真分辨率，
-   而是 `Gdk.pixbuf_get_from_window` 按窗口 scale factor **虚拟放大**出来的。
-2. 覆盖层窗口的分配尺寸同样受 GDK 缩放影响，于是「事件坐标 / 窗口分配 /
-   抓图尺寸」三者由**不同的缩放口径**推导，任一处与假设不符就整体错位——
-   这正是「圈的位置和截的位置不是一个位置」的来源。
-3. 修复方向：把覆盖层固定在设备像素尺度（`GDK_SCALE=1`），让
-   **事件坐标 = 窗口分配 = X11 根 = 抓图像素**，四个量同源，换算只剩一次。
+修法：
+1. 入口（`bin/snapctrlalt` / `snapctrlalt.sh`）固定 `GDK_SCALE=1`，让
+   事件坐标 = 覆盖层窗口 = X11 根 = 抓图像素，四者同源。
+2. `geometry.py` 运行时标定 + 指针自证（Xlib 根指针对账 GTK 事件坐标），
+   解出残留平移/缩放并自动纠正；策略保守，异常采样不污染标定。
+3. 抓图 **Xlib 优先**（永远返回根窗口真实像素）。
+4. 逃生阀：`SNAP_SCALE` / `SNAP_OFFSET_X` / `SNAP_OFFSET_Y`。
+5. UI 单独缩放（`ui_scale`，HiDPI 自动 2.0），不参与坐标换算。
 
-## 三、下一步要做的修改（按顺序）
+验证：`tests/test_coords.py` 在真实抓图上逐像素比对 + 全屏反查最佳匹配偏移 = 0。
 
-1. **接入 `geometry.py`**：覆盖层构造时用 `geometry.measure(img.size)` 得到标定，
-   `canvas = root`、`zoom = img/root`（本机会是 1.0）；把 `_pos()` 换成
-   `geo.ptr_to_root()`，`_to_img()` 换成 `geo.ptr_to_img()`，导出用
-   `geo.rect_root_to_img()`；绘制不再做任何浮点缩放（`k` 恒为 1）。
-2. **运行时自证**：第一次 `motion` 时把 GTK 事件坐标与 `geometry.root_pointer()`
-   对账，不一致就写回修正并记日志；`--selftest` 增加标定用例，打印完整几何。
-3. **抓图顺序**：`grab_full_screen` 改为 **Xlib 优先**（永远返回真实根像素），
-   GDK 退为回退路径——避免再被 GDK 的缩放口径影响。
-4. **逃生阀**：`SNAP_SCALE` / `SNAP_OFFSET_X` / `SNAP_OFFSET_Y` 环境变量
-   （`geometry._apply_env_overrides` 已实现）+ 设置界面可调。
-5. **打包**：`packaging/build-deb.sh` 照搬 oled-guard 约定（手工 stage +
-   `dpkg-deb --root-owner-group`、`SOURCE_DATE_EPOCH` 固定时间戳、`control`
-   占位符替换），`packaging/debian/{control,changelog,copyright,postinst,prerm,postrm}`；
-   **装后默认不自启**，`postinst` 只刷新图标/desktop 缓存。
-6. **收尾**：修 `tests/`、`tools/` 的路径假设，跑通自检 / 回归 / e2e，
-   更新 README 与 CHANGELOG。
-
-## 四、新目录结构
+## 三、目录结构
 
 ```
-src/snapctrlalt/          Python 包（capture_linux / overlay / geometry / ...）
+src/snapctrlalt/          Python 包（capture_linux / overlay / geometry / assets / ...）
 bin/snapctrlalt           命令行入口（固定 GDK_SCALE=1，deb 与源码通用）
 share/applications/       snapctrlalt.desktop
-share/autostart/          自启用 desktop（可选）
 share/icons/hicolor/      各尺寸 PNG + scalable SVG
-packaging/build-deb.sh    构建脚本（不依赖 debhelper）
+packaging/build-deb.sh    构建 deb（不依赖 debhelper，可复现）
 packaging/debian/         control / changelog / copyright / postinst / prerm / postrm
-tests/                    回归与端到端测试
+tests/                    test_overlay(54) / test_coords(24) / test_gui_e2e(22)
 tools/                    make_icons / diagnose / perf
-snapctrlalt.sh            本地启动脚本
+snapctrlalt.sh            源码目录启动脚本
 install.sh                用户级安装（~/.local）
 ```
 
-## 五、复现与验证命令
+## 四、复现与验证命令
 
 ```bash
-./snapctrlalt.sh --selftest          # 基础自检（应打印完整几何标定）
-./snapctrlalt.sh --once              # 截一次，手动核对框选与截取是否一致
-python3 tests/test_overlay.py        # 界面回归（重构后需先修路径）
-python3 tests/test_gui_e2e.py        # 端到端（真鼠标拖框 + 真剪贴板）
+./packaging/build-deb.sh             # 构建 deb（内部先跑 overlay + coords 测试）
+sudo apt install ./dist/*.deb        # 安装（默认不开自启）
+./snapctrlalt.sh --selftest          # 基础自检（含坐标标定）
+./snapctrlalt.sh --once              # 截一次手动核对
+python3 tests/test_overlay.py        # 界面回归 54 项
+python3 tests/test_coords.py         # 坐标专项 24 项（含逐像素验证）
+python3 tests/test_gui_e2e.py        # 端到端 22 项（真鼠标，约 20 秒）
 python3 tools/diagnose.py            # 环境诊断
+./snapctrlalt.sh --perf              # 帧耗时基准
 ```
 
-对照实验（确认缩放口径）：
+## 五、其他备注
 
-```bash
-GDK_SCALE=1 python3 -c "..."   # 抓图 2880×1800
-python3 -c "..."               # 抓图 5760×3600（虚拟放大）
-```
+- deb 装完**默认不自启**，托盘菜单里勾选「开机自启」即可。
+- 覆盖层现在按物理像素运行：在 2880 宽的屏上界面按 `ui_scale=2.0` 放大，
+  视觉尺寸与 1080p 屏一致；如需调整，改 `~/.config/snapctrlalt/config.json`
+  里的 `ui_scale`（`auto` 或 0.5~3.0 的数值）。
+- 若某台机器上仍观察到偏移，先跑 `python3 tools/diagnose.py`，它会打印
+  抓图 / X11 根 / 覆盖层窗口三者的实测尺寸与指针映射，一眼能看出是哪一项不对。

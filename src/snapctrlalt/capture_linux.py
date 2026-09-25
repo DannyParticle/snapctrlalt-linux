@@ -286,7 +286,11 @@ def grab_full_screen(bounds: ScreenInfo | None = None) -> tuple[Image.Image, Scr
         return img, bounds
 
     if has_x11():
-        for name, fn in (("gdk", _grab_gdk), ("xlib", _grab_xlib)):
+        # Xlib 优先：它永远返回「X11 根窗口的真实像素」，口径固定；
+        # Gdk.pixbuf_get_from_window 会按窗口 scale factor 把结果放大
+        # （实测 2880×1800 的根会返回 5760×3600），坐标链容易被它带偏，
+        # 所以只作为回退。
+        for name, fn in (("xlib", _grab_xlib), ("gdk", _grab_gdk)):
             try:
                 img, info = _accept(fn(bounds), name)
                 return img, info

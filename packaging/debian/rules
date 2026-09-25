@@ -1,0 +1,59 @@
+#!/usr/bin/make -f
+# Build the SnapCtrlAlt Debian package (debhelper path).
+#
+# The package is pure Python, so "building" only means installing the library
+# and the data files into the staging directory.  packaging/build-deb.sh does
+# the same thing by hand and is the recommended route on machines without
+# debhelper; this file exists so `dpkg-buildpackage` also works.
+
+export PYTHONPATH := $(CURDIR)/src
+PYTHON := python3
+DESTDIR := $(CURDIR)/debian/snapctrlalt
+PYDIR := $(DESTDIR)/usr/lib/python3/dist-packages
+ICONS := $(DESTDIR)/usr/share/icons/hicolor
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	rm -rf src/snapctrlalt/__pycache__ tests/__pycache__ tools/__pycache__ \
+	       build dist *.egg-info
+
+override_dh_auto_build:
+	$(PYTHON) -m compileall -q src/snapctrlalt
+
+override_dh_auto_test:
+	PYTHONPATH=src $(PYTHON) tests/test_overlay.py
+	PYTHONPATH=src $(PYTHON) tests/test_coords.py
+
+override_dh_auto_install:
+	# Python 包
+	install -d $(PYDIR)
+	cp -r src/snapctrlalt $(PYDIR)/
+	find $(PYDIR) -name '__pycache__' -type d -prune -exec rm -rf {} +
+	# 命令行入口
+	install -d $(DESTDIR)/usr/bin
+	install -m 0755 bin/snapctrlalt $(DESTDIR)/usr/bin/
+	# 桌面入口与图标
+	install -d $(DESTDIR)/usr/share/applications
+	install -m 0644 share/applications/snapctrlalt.desktop $(DESTDIR)/usr/share/applications/
+	for size in 16 22 24 32 48 64 128 256 512; do \
+	    install -d $(ICONS)/$${size}x$${size}/apps; \
+	    install -m 0644 share/icons/hicolor/$${size}x$${size}/apps/snapctrlalt.png \
+	        $(ICONS)/$${size}x$${size}/apps/; \
+	done
+	install -d $(ICONS)/scalable/apps
+	install -m 0644 share/icons/hicolor/scalable/apps/snapctrlalt.svg $(ICONS)/scalable/apps/
+	# 文档
+	install -d $(DESTDIR)/usr/share/doc/snapctrlalt
+	install -m 0644 README.md $(DESTDIR)/usr/share/doc/snapctrlalt/README.md
+	install -m 0644 CHANGELOG.md $(DESTDIR)/usr/share/doc/snapctrlalt/CHANGELOG.md
+
+override_dh_installdocs:
+	@echo "documentation is installed by dh_auto_install"
+
+override_dh_installman:
+	@echo "no manual pages"
+
+override_dh_auto_configure:
+	@echo "nothing to configure"

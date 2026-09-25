@@ -1,0 +1,40 @@
+#!/bin/sh
+# Pre-removal script for the snapctrlalt Debian package.
+#
+# Stops a running instance so the files can be replaced or removed cleanly.
+# The process is asked to quit through its own command socket first (which
+# releases the global hotkey and the tray icon), then terminated if needed.
+
+set -e
+
+case "${1:-}" in
+    remove|upgrade|deconfigure)
+        # 尽力而为：找不到实例也不应让卸载失败
+        if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}/snapctrlalt.sock" ]; then
+            python3 - <<'PY' 2>/dev/null || true
+import os, socket, sys
+path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "snapctrlalt.sock")
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(1.0)
+    s.connect(path)
+    s.sendall(b"quit\n")
+    try:
+        s.recv(16)
+    except OSError:
+        pass
+    s.close()
+except OSError:
+    pass
+PY
+        fi
+        pkill -f '/usr/bin/snapctrlalt' 2>/dev/null || true
+        pkill -f 'snapctrlalt.snap' 2>/dev/null || true
+        ;;
+    failed-upgrade)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

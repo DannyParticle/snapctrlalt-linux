@@ -1,0 +1,31 @@
+snapctrlalt (1.2.0) unstable; urgency=medium
+
+  * Linux port of SnapCtrlAlt: global hotkey, full screen overlay, annotation
+    tools, clipboard output, tray resident.
+  * Fixed the selection offset on HiDPI displays.  The overlay ran under GDK's
+    scaling, so the event coordinates, the window allocation and the captured
+    image were derived from different scaling factors; on this machine the
+    2880x1800 root window even produced a 5760x3600 capture that was GDK's own
+    upscale rather than a real resolution.  The overlay now runs at device
+    pixel scale, so the event coordinates, the window, the X11 root window and
+    the captured pixels are the same space, and a runtime calibration verifies
+    the pointer mapping against the X11 root pointer, correcting any residual
+    translation or scaling and logging what it found.
+  * The capture path now prefers Xlib, which always returns the root window's
+    real pixels, instead of GDK's scaled pixbuf.
+  * Added independent UI scaling for the toolbar, magnifier and handles, so
+    keeping the coordinates exact no longer makes the interface tiny on HiDPI
+    panels.
+  * Added tests/test_coords.py: calibration maths across 1x, 1.5x, 2x and 3x,
+    pointer self-check behaviour including faulty samples, and a pixel exact
+    end-to-end check that the selected region equals the exported image.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Fri, 25 Sep 2026 16:00:00 +0800
+
+snapctrlalt (1.1.0) unstable; urgency=medium
+
+  * Initial release: overlay with selection, magnifier, annotation toolbar and
+    eleven tools; tray icon; global hotkeys; clipboard with clipboard manager
+    persistence; pinned windows; settings dialog; single instance IPC.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Fri, 25 Sep 2026 14:00:00 +0800

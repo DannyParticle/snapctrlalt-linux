@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 import gi  # noqa: E402
 
@@ -24,6 +24,7 @@ from gi.repository import Gtk  # noqa: E402
 from PIL import Image, ImageChops  # noqa: E402
 
 from snapctrlalt import overlay as ov  # noqa: E402
+from snapctrlalt.geometry import Geometry  # noqa: E402
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -90,9 +91,17 @@ def diff_bbox(a: Image.Image, b: Image.Image):
 
 
 def new_overlay(app: FakeApp, w=800, h=600, scale=1) -> TestOverlay:
+    """构造覆盖层。
+
+    ``scale`` 表示抓图相对屏幕（根窗口）的像素倍数：1 = 设备像素模式（抓图 =
+    屏幕像素），2 = 抓图分辨率是屏幕的两倍（HiDPI）。这不是「旧版整数缩放」，
+    而是明确的「根 ↦ 图像」映射，由 Geometry 承载。
+    """
     img = make_screen(w, h, scale)
+    geo = Geometry(img_w=img.width, img_h=img.height, root_w=w, root_h=h,
+                   win_w=w, win_h=h)
     return TestOverlay(app, img, (0, 0, img.width, img.height),
-                       on_close=lambda r: None, scale=scale,
+                       on_close=lambda r: None, scale=scale, geo=geo,
                        status_cb=app.status.append)
 
 
@@ -129,15 +138,16 @@ def test_selection_flow(app: FakeApp) -> None:
 
 
 def test_result_matches_selection(app: FakeApp) -> None:
-    print("\n[2] 导出尺寸与选区一致")
+    print("\n[2] 导出尺寸与选区一致（含 HiDPI：抓图分辨率是屏幕的两倍）")
     for scale in (1, 2):
         o = new_overlay(app, 800, 600, scale)
-        o.sel = (100.0, 50.0, 300.0, 250.0)
+        o.sel = (100.0, 50.0, 300.0, 250.0)      # 选区用屏幕坐标
         img = o.render_result()
-        want = (200 * scale, 200 * scale)
-        check(f"x{scale} 导出尺寸 = 选区×缩放 {want}", img.size == want, str(img.size))
+        want = (200 * scale, 200 * scale)        # 导出按 zoom 放大
+        check(f"x{scale} 导出尺寸 = 选区×抓图倍率 {want}", img.size == want, str(img.size))
         base = o.screen.crop((100 * scale, 50 * scale, 300 * scale, 250 * scale))
-        check(f"x{scale} 未标注时与原始画面一致", diff_bbox(img, base) is None)
+        check(f"x{scale} 取的是屏幕上同一区域，逐像素一致",
+              diff_bbox(img, base) is None, f"差异 {diff_bbox(img, base)}")
         o.win.destroy()
 
 

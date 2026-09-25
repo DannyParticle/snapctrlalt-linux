@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 import cairo  # noqa: E402
 import gi  # noqa: E402
@@ -55,6 +55,7 @@ class HeadlessOverlay(ov.ShotOverlay):
     def __init__(self, *a, disp=(1440, 900), **kw):
         self._disp = disp
         super().__init__(*a, **kw)
+
 
     @property
     def disp_w(self) -> float:

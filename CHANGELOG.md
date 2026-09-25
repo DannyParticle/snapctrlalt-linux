@@ -3,6 +3,57 @@
 作者：参考 Windows 版 SnapCtrlAlt（作者 mimo、DeepSeek Harness 与 DannyParticle）。
 许可：MIT。版本号与上游保持一致，便于对照功能。
 
+## 1.2.0 — 坐标模型重构 + Debian 打包
+
+**修：框选位置与截取位置不一致（本机 Linux Mint / Cinnamon / X11 实测定位）**
+
+根因是两个「缩放」被混用且口径不同：
+
+| 量 | 不设 GDK_SCALE | 设 GDK_SCALE=1 |
+|---|---|---|
+| GTK 显示器逻辑几何 | 1440×900（scale 2） | 2880×1800（scale 1） |
+| `Gdk.pixbuf_get_from_window` 抓图 | 5760×3600 | 2880×1800 |
+| Xlib 抓图 / X11 根窗口 | 2880×1800 | 2880×1800 |
+
+- 这台机器的真实像素是 2880×1800；原先的 5760×3600 不是真分辨率，而是
+  `Gdk.pixbuf_get_from_window` 按窗口 scale factor **虚拟放大**出来的。
+- 覆盖层窗口的分配尺寸又受同一个 GDK 缩放影响，于是「事件坐标 / 窗口分配 /
+  抓图尺寸」三者由不同缩放口径推导 —— 任一处与假设不符就整体错位。
+- 现在覆盖层固定在设备像素尺度运行（入口脚本设 `GDK_SCALE=1`），让
+  **事件坐标 = 覆盖层窗口 = X11 根窗口 = 抓图像素**，四者同源，只剩一次整数换算。
+- 抓图顺序改为 **Xlib 优先**（永远返回根窗口真实像素），GDK 退为回退路径。
+- 新增 `src/snapctrlalt/geometry.py`：运行时标定 + 指针自证。开屏后用 Xlib 读到的
+  根指针对账 GTK 事件坐标，解出残留的平移与缩放并自动纠正，全过程写进日志；
+  修正策略刻意保守，单个异常采样不会污染标定。
+- 新增逃生阀 `SNAP_SCALE` / `SNAP_OFFSET_X` / `SNAP_OFFSET_Y`。
+- 新增 `tests/test_coords.py`（24 项）：1×/1.5×/2×/3× 倍率换算、边界钳制、
+  指针自证的平移/缩放/异常采样、以及真实抓图上的逐像素比对与全屏反查最佳匹配
+  偏移（要求为 0）。
+
+**加：UI 独立缩放**
+
+坐标精确的代价是在 HiDPI 屏上按物理像素画 UI 会偏小。现在 UI（工具栏、放大镜、
+手柄、提示）按显示器缩放系数单独放大（`ui_scale` 配置，默认 auto，HiDPI 取 2.0），
+只影响绘制、不参与任何坐标换算。
+
+**加：Debian 包**
+
+- `packaging/build-deb.sh`：手工 stage + `dpkg-deb --root-owner-group`，
+  **不需要 debhelper**；固定 `SOURCE_DATE_EPOCH`，同一份源码可复现出字节一致的 deb；
+  构建前自动跑 overlay + coords 测试，测试不过就打不出包。
+- `packaging/debian/{control,changelog,copyright,postinst,prerm,postrm}`。
+- **装完默认不开机自启**：`postinst` 只刷新图标与 desktop 缓存，
+  自启由托盘菜单里的开关决定；`postrm` 清理自启项但保留用户配置与截图。
+- 运行期依赖：`python3-gi`、`python3-gi-cairo`、`python3-cairo`、`python3-pil`、
+  `gir1.2-gtk-3.0`、`python3-xlib`；Recommends 托盘与通知的 typelib。
+
+**改：目录结构改为与 oled-guard 同构**
+
+`src/snapctrlalt/`（包）、`bin/snapctrlalt`（入口）、`share/{applications,icons}`、
+`packaging/`、`tests/`、`tools/`；新增 `src/snapctrlalt/assets.py` 统一资源定位
+（源码目录 / `~/.local` / `/usr/share` 三种形态都能找到图标），并修正
+`project_root()` 在 `src/` 布局下少算一层的问题。
+
 ## 1.1.1 — Linux 首个可用版本
 
 对标 Windows 版 1.1.1 的功能全集，交互、工具集、快捷键、工具栏布局逐一对应。

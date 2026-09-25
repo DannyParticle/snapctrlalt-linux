@@ -1,0 +1,44 @@
+#!/bin/sh
+# Post-installation script for the snapctrlalt Debian package.
+#
+# Deliberately does NOT enable autostart: that is the user's decision, and it is
+# one click away in the tray menu ("开机自启") or the settings window.  The
+# script only refreshes the caches the desktop needs to show the launcher.
+
+set -e
+
+ACTION="${1:-configure}"
+
+refresh_caches() {
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
+}
+
+case "$ACTION" in
+    configure)
+        refresh_caches
+        # 提示一下怎么开始用（只在终端安装时可见）
+        if [ -n "${DPKG_MAINTSCRIPT_PACKAGE:-}" ] && [ -t 1 ]; then
+            cat <<'EOF'
+SnapCtrlAlt 安装完成。
+
+  启动托盘常驻     : snapctrlalt
+  只截一次         : snapctrlalt --once
+  设置             : snapctrlalt --settings
+  自检             : snapctrlalt --selftest
+
+默认热键 Ctrl+Alt+D。开机自启请在托盘菜单里勾选「开机自启」。
+EOF
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

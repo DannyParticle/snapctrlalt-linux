@@ -130,6 +130,7 @@ DEFAULTS: dict = {
     "jpeg_quality": 95,
     "last_save_dir": "",
     "window_pin": True,               # 贴图（钉在桌面）
+    "ui_scale": "auto",               # 覆盖层 UI 缩放：auto / 0.5~3.0
 }
 
 # 兼容旧键名（Windows 版 config.json 直接拿来也能跑）
