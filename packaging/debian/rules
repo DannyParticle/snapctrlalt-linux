@@ -12,8 +12,22 @@ DESTDIR := $(CURDIR)/debian/snapctrlalt
 PYDIR := $(DESTDIR)/usr/lib/python3/dist-packages
 ICONS := $(DESTDIR)/usr/share/icons/hicolor
 
+# 本机没有 debhelper 时，不要吐出一堆看不懂的报错，直接把该做什么说清楚。
+# 平时的推荐路径是 packaging/build-deb.sh，它不需要任何构建依赖。
+ifeq ($(shell command -v dh 2>/dev/null),)
+%:
+	@echo "打包需要 debhelper（dh 命令），本机没有安装。" >&2
+	@echo >&2
+	@echo "  推荐改用（不需要任何构建依赖，结果完全一样）：" >&2
+	@echo "      ./packaging/build-deb.sh" >&2
+	@echo >&2
+	@echo "  或者先装 debhelper 再用 dpkg-buildpackage：" >&2
+	@echo "      sudo apt install debhelper devscripts" >&2
+	@exit 1
+else
 %:
 	dh $@
+endif
 
 override_dh_auto_clean:
 	rm -rf src/snapctrlalt/__pycache__ tests/__pycache__ tools/__pycache__ \

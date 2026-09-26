@@ -63,7 +63,7 @@ Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴
 
 ```bash
 ./packaging/build-deb.sh                 # 产物在 dist/snapctrlalt_<版本>_all.deb
-sudo apt install ./dist/snapctrlalt_1.2.0_all.deb
+sudo apt install ./dist/snapctrlalt_1.2.1_all.deb
 ```
 
 装完在应用菜单里搜「截图工具」，或直接敲 `snapctrlalt`。
@@ -186,7 +186,7 @@ snapctrlalt.sh            源码目录启动脚本
 | 文件 | 职责 | 对应 Windows 版 |
 |------|------|----------------|
 | `src/snapctrlalt/snap.py` | 入口、托盘常驻、热键分发、设置界面、单实例 IPC | `snap.py` |
-| `src/snapctrlalt/geometry.py` | 坐标标定与指针自证（平移 + 缩放纠正） | —（Windows 版靠 DPI 感知） |
+| `src/snapctrlalt/geometry.py` | 坐标标定与指针自证（平移 + 缩放纠正，支持负原点虚拟屏与分数缩放） | —（Windows 版靠 DPI 感知） |
 | `src/snapctrlalt/overlay.py` | 全屏覆盖层：选区、工具栏、标注渲染、放大镜、贴图触发 | `overlay.py` |
 | `src/snapctrlalt/capture_linux.py` | 虚拟屏度量 + 抓图（GDK → Xlib → Portal 三级回落） | `capture.py` |
 | `src/snapctrlalt/hotkey_linux.py` | `XGrabKey` 全局热键，注册失败会提示 | `hotkey.py` |
@@ -208,15 +208,16 @@ scrot / maim / ImageMagick `import`，命中就交给它；起不来则回落到
 
 ```bash
 python3 tests/test_overlay.py     # 界面回归：54 项，离屏跑真实覆盖层对象
-python3 tests/test_coords.py      # 坐标专项：24 项，含「框选==截取」逐像素验证
+python3 tests/test_coords.py      # 坐标专项：36 项，含「框选==截取」逐像素验证
 python3 tests/test_gui_e2e.py     # 端到端：真窗口 + XTEST 真鼠标拖框 + 真剪贴板（约 20 秒）
 ./snapctrlalt.sh --selftest       # 基础自检：配置 / 抓图 / 坐标标定 / 剪贴板 / 热键 / 托盘
 ./snapctrlalt.sh --perf           # 用真实抓图尺寸测各交互路径帧耗时
 ./packaging/build-deb.sh          # 构建 deb（构建前自动跑 overlay + coords 测试）
 ```
 
-`tests/test_coords.py` 是这次偏移问题的专用防护：它覆盖 1×/1.5×/2×/3× 各种
-「根 ↦ 抓图」倍率、指针自证的平移与缩放修正（含异常采样不得污染标定），
+`tests/test_coords.py` 是这次偏移问题的专用防护：它覆盖 1×/1.25×/1.5×/1.75×/2×/3×
+各种「根 ↦ 抓图」倍率（含全屏扫描断言无累积取整偏差）、虚拟屏原点非 (0,0) 的
+多显示器布局、指针自证的平移与缩放修正（含异常采样不得污染标定），
 并在真实抓图上做逐像素比对 + 全屏反查最佳匹配偏移，要求必须是 0。
 
 端到端测试会短暂接管鼠标（约 20 秒），跑完不留后台进程；它用隔离的

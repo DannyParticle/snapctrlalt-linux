@@ -111,6 +111,56 @@ def test_pointer_self_check() -> None:
           f"ptr_to_root(600,600)={tuple(round(v) for v in g4.ptr_to_root(600, 600))}")
 
 
+def test_virtual_screen_offset() -> None:
+    """副屏排在主屏左侧/上方时，虚拟屏原点不是 (0,0)。"""
+    print("\n[2b] 虚拟屏原点非 0（副屏在左 / 在上）")
+    # 左屏 1920 宽 + 主屏 1920 宽，根原点 x = -1920
+    g = Geometry(img_w=3840, img_h=1080, root_w=3840, root_h=1080,
+                 win_w=3840, win_h=1080, win_x=-1920, win_y=0)
+    check("窗口原点记录正确", (g.win_x, g.win_y) == (-1920, 0), f"{g.win_x},{g.win_y}")
+    check("几何自检仍无异常", g.check() == [], str(g.check()))
+
+    # 覆盖层窗口铺满虚拟屏后，事件坐标是相对窗口的：窗口 (100,100)
+    # 对应根坐标 (-1920+100, 100)；换算成抓图像素就是 100,100（zoom=1）。
+    # 这里用退化几何（overlay 在拿不到 X11 时的路径）验证这段偏移链路。
+    from snapctrlalt.overlay import _fallback_geometry
+
+    fb = _fallback_geometry(3840, 1080, (-1920, 0, 3840, 1080), 1)
+    check("退化几何保留窗口原点",
+          (fb.win_x, fb.win_y) == (-1920, 0), f"{fb.win_x},{fb.win_y}")
+    check("指针换算带上窗口原点偏移",
+          fb.ptr_to_root(100, 100) == (-1820, 100),
+          f"ptr_to_root(100,100)={fb.ptr_to_root(100, 100)}")
+    check("窗口局部坐标 → 抓图像素（去掉原点）",
+          fb.ptr_to_img(100, 100) == (-1820, 100),
+          f"ptr_to_img(100,100)={fb.ptr_to_img(100, 100)}")
+
+    # 真 X11 标定路径：事件坐标本身就是根坐标（窗口在根原点），偏移为 0
+    g2 = Geometry(img_w=3840, img_h=1080, root_w=3840, root_h=1080,
+                  win_w=3840, win_h=1080, win_x=-1920, win_y=-1080)
+    check("根坐标换算不受窗口摆放影响",
+          g2.rect_root_to_img((0, 0, 100, 100)) == (0, 0, 100, 100),
+          str(g2.rect_root_to_img((0, 0, 100, 100))))
+
+
+def test_extreme_fractional_scaling() -> None:
+    """1.25× / 1.75× 这类分数缩放不能出现累积偏差。"""
+    print("\n[2c] 分数缩放（1.25× / 1.75×）的精度")
+    for zoom in (1.25, 1.75):
+        g = Geometry(img_w=int(1920 * zoom), img_h=int(1080 * zoom),
+                     root_w=1920, root_h=1080, win_w=1920, win_h=1080)
+        worst = 0
+        for x in range(0, 1920, 97):
+            for y in range(0, 1080, 89):
+                ix, iy, _x1, _y1 = g.rect_root_to_img((x, y, x + 1, y + 1))
+                worst = max(worst, abs(ix - round(x * zoom)), abs(iy - round(y * zoom)))
+        check(f"{zoom}× 全屏扫描无累积偏差", worst <= 1, f"最大偏差 {worst}px")
+        check(f"{zoom}× 缩放被正确识别", abs(g.zoom_x - zoom) < 0.01,
+              f"zoom={g.zoom_x:.4f}")
+        check(f"{zoom}× 不是整数倍（走浮点路径）", g.integer_zoom is None,
+              f"integer_zoom={g.integer_zoom}")
+
+
 def test_geometry_report() -> None:
     print("\n[3] 几何自检报告")
     g = Geometry(img_w=800, img_h=600, root_w=800, root_h=600, win_w=800, win_h=600)
@@ -195,8 +245,9 @@ def test_real_capture_alignment() -> None:
 
 def main() -> int:
     print("SnapCtrlAlt 坐标标定回归测试")
-    for fn in (test_rect_conversion, test_pointer_self_check, test_geometry_report,
-               test_real_capture_alignment):
+    for fn in (test_rect_conversion, test_pointer_self_check,
+               test_virtual_screen_offset, test_extreme_fractional_scaling,
+               test_geometry_report, test_real_capture_alignment):
         try:
             fn()
         except Exception:  # noqa: BLE001

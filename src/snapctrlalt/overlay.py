@@ -758,6 +758,24 @@ class ShotOverlay:
         return surf
 
     @property
+    def canvas_box(self) -> tuple[float, float, float, float]:
+        """画布对应的根坐标范围。
+
+        单屏且主屏在原点时就是 (0, 0, w, h)；若虚拟屏原点不是 0（副屏排在主屏
+        左侧或上方），下界就是负的 —— 所有钳制都必须用它，不能硬编码 0。
+        """
+        ox, oy = self.geo.win_x, self.geo.win_y
+        return float(ox), float(oy), float(ox + self.cr_w), float(oy + self.cr_h)
+
+    def _clamp_to_canvas(self, x0, y0, x1, y1):
+        bx0, by0, bx1, by1 = self.canvas_box
+        x0 = max(bx0, min(x0, bx1))
+        x1 = max(bx0, min(x1, bx1))
+        y0 = max(by0, min(y0, by1))
+        y1 = max(by0, min(y1, by1))
+        return x0, y0, x1, y1
+
+    @property
     def dev_scale(self) -> float:
         """画布（根像素）→ 抓图像素 的倍数。
 
@@ -797,11 +815,7 @@ class ShotOverlay:
             cr.set_source_surface(self._ensure_dim(), 0, 0)
             cr.paint()
         else:
-            x0, y0, x1, y1 = [float(v) for v in sel]
-            x0 = max(0.0, min(x0, self.cr_w))
-            x1 = max(0.0, min(x1, self.cr_w))
-            y0 = max(0.0, min(y0, self.cr_h))
-            y1 = max(0.0, min(y1, self.cr_h))
+            x0, y0, x1, y1 = self._clamp_to_canvas(*[float(v) for v in sel])
             region = (x0 * self.geo.zoom_x, y0 * self.geo.zoom_y,
                       x1 * self.geo.zoom_x, y1 * self.geo.zoom_y)
             # 亮区：直接把冻结底图贴进选区（Cairo 裁切，比 Pillow 裁片快）
@@ -1577,9 +1591,8 @@ class ShotOverlay:
                 self.mode = "select"
                 self.status_cb(_HINT_SELECT)
             else:
-                self.sel = (max(0.0, x0), max(0.0, y0),
-                            min(float(self.cr_w), max(x1, x0 + 5)),
-                            min(float(self.cr_h), max(y1, y0 + 5)))
+                self.sel = self._clamp_to_canvas(
+                    x0, y0, max(x1, x0 + 5), max(y1, y0 + 5))
                 self.mode = "draw"
                 self.tool = T_RECT if self.tool == T_SELECT else self.tool
                 self.status_cb("已选中区域 · 工具栏可标注 · Enter 复制并关闭")
@@ -1610,7 +1623,7 @@ class ShotOverlay:
 
     def select_all(self) -> None:
         """选中整屏（双击 / Ctrl+A）。"""
-        self.sel = (0.0, 0.0, float(self.cr_w), float(self.cr_h))
+        self.sel = self.canvas_box
         self.mode = "draw"
         self.status_cb(f"已选整屏 {self.img_w}×{self.img_h} · 工具栏可标注 · Enter 完成")
         self._redraw()
@@ -1639,8 +1652,7 @@ class ShotOverlay:
         if "e" in h:
             x1 = ix
         x0, y0, x1, y1 = _norm_box(x0, y0, x1, y1)
-        self.sel = (max(0.0, x0), max(0.0, y0),
-                    min(float(self.cr_w), x1), min(float(self.cr_h), y1))
+        self.sel = self._clamp_to_canvas(x0, y0, x1, y1)
 
     def _apply_move(self, ix, iy) -> None:
         if not self._drag:
@@ -1648,10 +1660,11 @@ class ShotOverlay:
         ox0, oy0, ox1, oy1 = self._drag["orig"]
         sx, sy = self._drag["start"]
         dx, dy = ix - sx, iy - sy
-        dx = max(dx, -ox0)
-        dy = max(dy, -oy0)
-        dx = min(dx, self.cr_w - ox1)
-        dy = min(dy, self.cr_h - oy1)
+        bx0, by0, bx1, by1 = self.canvas_box
+        dx = max(dx, bx0 - ox0)
+        dy = max(dy, by0 - oy0)
+        dx = min(dx, bx1 - ox1)
+        dy = min(dy, by1 - oy1)
         self.sel = (ox0 + dx, oy0 + dy, ox1 + dx, oy1 + dy)
 
     def _commit_shape(self, d: dict, end) -> None:

@@ -1,3 +1,23 @@
+snapctrlalt (1.2.1) unstable; urgency=medium
+
+  * Fixed the selection bounds on multi-monitor desktops whose virtual screen
+    does not start at (0, 0) -- a monitor placed to the left of or above the
+    primary one gives the root window a negative origin.  Every clamp used to
+    assume 0 as the lower bound, which would have pushed selections on that
+    monitor off by the origin; the bounds now come from the calibrated canvas
+    rectangle, and "select all" uses it too.
+  * Made bin/snapctrlalt robust when it is reached through a symlink: it now
+    looks for the package next to both the link and the resolved path, so a
+    link into a source checkout and a ~/.local install both work, while a dpkg
+    install still uses the system packages without touching sys.path.
+  * packaging/debian/rules now explains what to do instead of failing with a
+    bare make error when debhelper is not installed.
+  * Test suite grew to 36 checks: virtual screen origins that are not (0, 0),
+    and 1.25x / 1.75x fractional scaling with a full-screen sweep asserting no
+    accumulated rounding error.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Fri, 25 Sep 2026 23:50:00 +0800
+
 snapctrlalt (1.2.0) unstable; urgency=medium
 
   * Linux port of SnapCtrlAlt: global hotkey, full screen overlay, annotation

@@ -24,9 +24,24 @@ from pathlib import Path
 os.environ.setdefault("GDK_SCALE", "1")
 os.environ.setdefault("GDK_DPI_SCALE", "1")
 
-_SRC = Path(__file__).resolve().parent.parent / "src"
-if _SRC.is_dir():                      # 源码目录运行时使用
-    sys.path.insert(0, str(_SRC))
+# 把「脚本所在项目的 src」加进搜索路径，让源码目录 / ~/.local 安装 / deb
+# 三种形态都能 import 到 snapctrlalt：
+#   * deb 安装：包装在 /usr/lib/python3/dist-packages，这里两个候选都不存在，
+#     直接走系统路径（不要污染 sys.path）；
+#   * ~/.local 安装与源码运行：脚本旁边的 ../src 存在，加进去即可。
+# 关键点：**同时看软链自身的位置和解析后的位置**。只看 resolve() 的话，
+# bin/snapctrlalt 被软链到别处时会去错误的位置找；只看自身则相对软链解析不准。
+_here = Path(__file__).parent
+_resolved = Path(__file__).resolve().parent
+_candidates = []
+for _base in (_resolved, _here):
+    if _base not in _candidates:
+        _candidates.append(_base)
+for _base in _candidates:
+    _src = _base.parent / "src"
+    if (_src / "snapctrlalt" / "__init__.py").is_file():
+        sys.path.insert(0, str(_src))
+        break
 
 try:
     from snapctrlalt.snap import main
