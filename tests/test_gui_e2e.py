@@ -106,7 +106,24 @@ def drag(x0: int, y0: int, x1: int, y1: int, steps: int = 8) -> None:
     time.sleep(0.4)
 
 
-def read_clipboard_png(path: Path) -> tuple[int, int] | None:
+def read_clipboard_png(path: Path, expect: tuple[int, int] | None = None,
+                       tries: int = 4) -> tuple[int, int] | None:
+    """用独立进程把剪贴板里的图存成 PNG，返回尺寸。
+
+    剪贴板是异步交接（本进程写完 → 独立进程再取），所以按期望尺寸重试几次，
+    否则可能读到上一次复制的内容。
+    """
+    got = None
+    for attempt in range(tries):
+        got = _read_clipboard_once(path)
+        if got is None or expect is None or got == expect:
+            return got
+        time.sleep(0.6)
+        del attempt
+    return got
+
+
+def _read_clipboard_once(path: Path) -> tuple[int, int] | None:
     """用独立进程把剪贴板里的图存成 PNG，返回尺寸。"""
     reader = path.with_suffix(".py")
     reader.write_text(
@@ -168,8 +185,22 @@ def test_annotation_roundtrip(tmp: Path, baseline: "Image.Image | None") -> None
     while time.time() - t0 < 10 and find_overlay() is not None:
         time.sleep(0.3)
 
+    # 关键：剪贴板是异步交接。等到应用日志里出现「已复制到剪贴板 WxH」再读，
+    # 否则可能读到上一次的内容（这曾导致偶发失败）。
+    want = (x1 - x0, y1 - y0)
+    t0 = time.time()
+    copied = False
+    while time.time() - t0 < 12:
+        txt = (tmp / "app.log").read_text(errors="replace")
+        if f"已复制到剪贴板 {want[0]}×{want[1]}" in txt:
+            copied = True
+            break
+        time.sleep(0.3)
+    check("标注用例：应用确认复制完成", copied,
+          _pick((tmp / "app.log").read_text(errors="replace"), "已复制"))
+
     png = tmp / "annotated_clip.png"
-    size = read_clipboard_png(png)
+    size = read_clipboard_png(png, expect=want)
     check("标注用例：剪贴板尺寸 = 框选尺寸", size == (x1 - x0, y1 - y0),
           f"{size} 期望 {(x1 - x0, y1 - y0)}")
     if size is None or not png.is_file():
@@ -197,7 +228,22 @@ def test_annotation_roundtrip(tmp: Path, baseline: "Image.Image | None") -> None
         img.save(tmp / "annotated_evidence.png")
         return
 
-    base = baseline.crop((x0, y0, x1, y1)).convert("RGB")
+    # 基准图（gnome-screenshot）的像素尺寸未必等于 X11 根窗口尺寸：它自己也
+    # 会受桌面缩放影响（本机 2880×1800 的根，截图是 5760×3600）。所以必须先
+    # 把「根坐标」换算到「基准图像素」再裁，否则裁的根本不是同一块地方。
+    from Xlib import display as _xd  # noqa: PLC0415
+
+    _d = _xd.Display()
+    _g = _d.screen().root.get_geometry()
+    root_w, root_h = int(_g.width), int(_g.height)
+    _d.close()
+    bsx = baseline.size[0] / float(root_w)
+    bsy = baseline.size[1] / float(root_h)
+    print(f"     （基准图 {baseline.size} ÷ 根 {root_w}×{root_h} = x{bsx:.2f}/x{bsy:.2f}）")
+    base = baseline.crop((int(round(x0 * bsx)), int(round(y0 * bsy)),
+                          int(round(x1 * bsx)), int(round(y1 * bsy)))).convert("RGB")
+    if base.size != img.size:
+        base = base.resize(img.size, Image.NEAREST)
     # 拍摄基准与截图之间画面必须没变，否则判据本身不成立
     diff_all = ImageChops.difference(img, base).getbbox()
     if diff_all is None:
@@ -218,17 +264,19 @@ def test_annotation_roundtrip(tmp: Path, baseline: "Image.Image | None") -> None
     check("标注用例：矩形左边出现了变化", band_has_diff(ox, oy, ox + m, ey))
     check("标注用例：矩形右边出现了变化", band_has_diff(ex - m, oy, ex, ey))
 
-    # 内部远离边界处必须与基准完全一致（没有误涂）
+    # 内部远离边界处必须与基准基本一致（没有误涂）。
+    # 允许极小比例的差异：桌面是活的（浏览器重绘、光标闪烁、时钟跳字），
+    # 判据是「误涂会成片出现」而不是「每个像素都得一样」。
     inner = (ox + m + 4, oy + m + 4, ex - m - 4, ey - m - 4)
-    same = True
+    total = max(1, (inner[2] - inner[0]) * (inner[3] - inner[1]))
+    changed = 0
     for y in range(inner[1], inner[3]):
         for x in range(inner[0], inner[2]):
-            if px[x, y] > 24:
-                same = False
-                break
-        if not same:
-            break
-    check("标注用例：矩形内部与基准一致（没有误涂）", same)
+            if px[x, y] > 40:
+                changed += 1
+    ratio = changed / total
+    check("标注用例：矩形内部没有被误涂", ratio < 0.01,
+          f"内部变化像素 {changed}/{total}（{ratio * 100:.3f}%，阈值 1%）")
     img.save(tmp / "annotated_evidence.png")
 
 
