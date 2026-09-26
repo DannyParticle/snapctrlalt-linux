@@ -123,7 +123,7 @@ DEFAULTS: dict = {
     "copy_to_primary": False,         # 同时写入 X11 PRIMARY 选区（中键粘贴）
     "show_tray": True,
     "notify": True,
-    "delay": 0,                       # 托盘「延时截图」的秒数
+    "delay": 3,                       # 托盘「延时截图」的秒数（与 README 一致）
     "magnifier": True,
     "toolbar_theme": "light",
     "save_format": "png",

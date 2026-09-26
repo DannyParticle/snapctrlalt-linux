@@ -1,3 +1,22 @@
+snapctrlalt (1.2.3) unstable; urgency=medium
+
+  * Fixed the settings window never appearing.  It crashed while being built:
+    Gtk.Label has no set_border_width(), and the exception happened after the
+    window was created but before it was shown, so the process stayed alive
+    with no visible dialog.  The window is now built correctly and verified by
+    opening it for real.
+  * The settings window was also reworked: hotkey rows have a "record" button
+    that captures the combination you press, the registered hotkey state is
+    shown, invalid hotkeys and identical capture/quit keys are rejected before
+    saving, and the interface scale, save format and PRIMARY-clipboard options
+    are exposed.
+  * --settings now opens the window in its own process instead of being
+    forwarded to a resident instance, so it always comes up.
+  * "delay" defaults to 3 again, matching the documentation; the spin button
+    minimum of 1 used to turn the old default of 0 into 1.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Sun, 27 Sep 2026 00:20:00 +0800
+
 snapctrlalt (1.2.2) unstable; urgency=medium
 
   * The end-to-end suite now draws a rectangle with real mouse input and checks

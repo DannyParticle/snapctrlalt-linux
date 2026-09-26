@@ -177,8 +177,9 @@ def main() -> int:
         p = ROOT / rel
         line(rel, OK if p.is_file() else WARN, "存在" if p.is_file() else "缺失")
     print()
-    print("提示：`python3 snap.py --selftest` 做完整自检，"
-          "`python3 snap.py --perf` 测帧耗时。")
+    print("提示：`./snapctrlalt.sh --selftest` 做完整自检，"
+          "`./snapctrlalt.sh --perf` 测帧耗时，"
+          "`./packaging/build-deb.sh` 构建安装包。")
     return 0
 
 

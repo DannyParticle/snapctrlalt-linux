@@ -136,8 +136,15 @@ def read_clipboard_png(path: Path) -> tuple[int, int] | None:
     return w, h
 
 
-def test_annotation_roundtrip(tmp: Path) -> None:
-    """框选 → 画矩形 → 复制，校验导出的像素里标注落在正确位置。"""
+def test_annotation_roundtrip(tmp: Path, baseline: "Image.Image | None") -> None:
+    """框选 → 画矩形 → 复制，用「标注前基准」逐区域比对校验标注落点。
+
+    判据刻意不依赖「找红色像素」——真实桌面上本来就可能有同色内容，
+    那样的断言会偶发失败。这里改成：标注前先拍一张基准，标注后要求
+      * 矩形四条边所在的窄带内出现差异；
+      * 矩形内部的远处（离边界足够远）与基准逐像素一致；
+      * 选区之外的内容不参与（导出本来就不含它）。
+    """
     print("\n[附] 端到端标注：矩形画在哪，导出里就在哪")
     x0, y0, x1, y1 = 400, 300, 1000, 700      # 选区 600×400（根像素）
     rx0, ry0, rx1, ry1 = 500, 400, 800, 600    # 矩形在屏幕上的位置
@@ -167,25 +174,61 @@ def test_annotation_roundtrip(tmp: Path) -> None:
           f"{size} 期望 {(x1 - x0, y1 - y0)}")
     if size is None or not png.is_file():
         return
-    from PIL import Image  # noqa: PLC0415
+
+    from PIL import Image, ImageChops  # noqa: PLC0415
 
     img = Image.open(png).convert("RGB")
-    px = img.load()
+    if baseline is None or baseline.size[0] < x1 or baseline.size[1] < y1:
+        # 没有可用的基准（截图失败）：退化成「四条边上有非背景色」的弱判据
+        print("     （没有基准图，退化为弱判据）")
+        px = img.load()
 
-    def has_stroke(bx0, by0, bx1, by1) -> bool:
-        return any(px[x, y][0] > 180 and px[x, y][1] < 90 and px[x, y][2] < 90
-                   for y in range(by0, by1) for x in range(bx0, bx1))
+        def has_stroke(bx0, by0, bx1, by1) -> bool:
+            return any(px[x, y][0] > 180 and px[x, y][1] < 90 and px[x, y][2] < 90
+                       for y in range(by0, by1) for x in range(bx0, bx1))
 
-    # 期望：矩形相对选区的坐标 = 屏幕坐标 - 选区原点
-    ox, oy = rx0 - x0, ry0 - y0
+        ox, oy = rx0 - x0, ry0 - y0
+        ex, ey = rx1 - x0, ry1 - y0
+        m = 8
+        check("标注用例：矩形上边有描边", has_stroke(ox, oy, ex, oy + m))
+        check("标注用例：矩形下边有描边", has_stroke(ox, ey - m, ex, ey))
+        check("标注用例：矩形左边有描边", has_stroke(ox, oy, ox + m, ey))
+        check("标注用例：矩形右边有描边", has_stroke(ex - m, oy, ex, ey))
+        img.save(tmp / "annotated_evidence.png")
+        return
+
+    base = baseline.crop((x0, y0, x1, y1)).convert("RGB")
+    # 拍摄基准与截图之间画面必须没变，否则判据本身不成立
+    diff_all = ImageChops.difference(img, base).getbbox()
+    if diff_all is None:
+        check("标注用例：导出与基准有差异（确实画上了东西）", False, "完全一致")
+        return
+
+    diff = ImageChops.difference(img, base).convert("L")
+    px = diff.load()
+
+    def band_has_diff(bx0, by0, bx1, by1) -> bool:
+        return any(px[x, y] > 24 for y in range(by0, by1) for x in range(bx0, bx1))
+
+    ox, oy = rx0 - x0, ry0 - y0        # 矩形在导出图里的位置
     ex, ey = rx1 - x0, ry1 - y0
-    m = 8   # 边框容差
-    check("标注用例：矩形上边落在正确位置", has_stroke(ox, oy, ex, oy + m))
-    check("标注用例：矩形下边落在正确位置", has_stroke(ox, ey - m, ex, ey))
-    check("标注用例：矩形左边落在正确位置", has_stroke(ox, oy, ox + m, ey))
-    check("标注用例：矩形右边落在正确位置", has_stroke(ex - m, oy, ex, ey))
-    check("标注用例：矩形内部没有被涂满",
-          not has_stroke(ox + m + 2, oy + m + 2, ex - m - 2, ey - m - 2))
+    m = 10                              # 描边宽度 + 抗锯齿容差
+    check("标注用例：矩形上边出现了变化", band_has_diff(ox, oy, ex, oy + m))
+    check("标注用例：矩形下边出现了变化", band_has_diff(ox, ey - m, ex, ey))
+    check("标注用例：矩形左边出现了变化", band_has_diff(ox, oy, ox + m, ey))
+    check("标注用例：矩形右边出现了变化", band_has_diff(ex - m, oy, ex, ey))
+
+    # 内部远离边界处必须与基准完全一致（没有误涂）
+    inner = (ox + m + 4, oy + m + 4, ex - m - 4, ey - m - 4)
+    same = True
+    for y in range(inner[1], inner[3]):
+        for x in range(inner[0], inner[2]):
+            if px[x, y] > 24:
+                same = False
+                break
+        if not same:
+            break
+    check("标注用例：矩形内部与基准一致（没有误涂）", same)
     img.save(tmp / "annotated_evidence.png")
 
 
@@ -369,8 +412,17 @@ def main() -> int:
         log_txt = (tmp / "app.log").read_text(errors="replace")
         check("取消有记录", "已取消截图" in log_txt, _pick(log_txt, "已取消"))
 
-        # 7b. 标注链路：真鼠标画矩形 → 复制 → 校验像素位置
-        test_annotation_roundtrip(tmp)
+        # 7b. 标注链路：先拍一张基准（此时覆盖层没开），再画矩形比对
+        baseline = None
+        base_png = tmp / "baseline.png"
+        if screenshot(base_png):
+            try:
+                from PIL import Image as _Image
+
+                baseline = _Image.open(base_png).convert("RGB")
+            except Exception:  # noqa: BLE001
+                baseline = None
+        test_annotation_roundtrip(tmp, baseline)
 
         # 8. 退出
         check("IPC 退出成功", send("quit"))
