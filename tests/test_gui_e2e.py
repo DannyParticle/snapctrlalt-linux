@@ -92,6 +92,103 @@ def screenshot(path: Path) -> bool:
     return False
 
 
+
+def drag(x0: int, y0: int, x1: int, y1: int, steps: int = 8) -> None:
+    """用 XTEST 真鼠标从 (x0,y0) 拖到 (x1,y1)。"""
+    sh(["xdotool", "mousemove", str(x0), str(y0)])
+    time.sleep(0.25)
+    sh(["xdotool", "mousedown", "1"])
+    for i in range(1, steps + 1):
+        sh(["xdotool", "mousemove",
+            str(x0 + (x1 - x0) * i // steps), str(y0 + (y1 - y0) * i // steps)])
+        time.sleep(0.05)
+    sh(["xdotool", "mouseup", "1"])
+    time.sleep(0.4)
+
+
+def read_clipboard_png(path: Path) -> tuple[int, int] | None:
+    """用独立进程把剪贴板里的图存成 PNG，返回尺寸。"""
+    reader = path.with_suffix(".py")
+    reader.write_text(
+        "import gi, sys\n"
+        "gi.require_version('Gtk','3.0')\n"
+        "gi.require_version('Gdk','3.0')\n"
+        "from gi.repository import Gtk, Gdk\n"
+        "Gtk.init_check(['x'])\n"
+        "import time\n"
+        "for _ in range(80):\n"
+        "    while Gtk.events_pending(): Gtk.main_iteration_do(False)\n"
+        "    pb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_image()\n"
+        "    if pb is not None:\n"
+        "        pb.savev(sys.argv[1], 'png', [], [])\n"
+        "        print(f'{pb.get_width()}x{pb.get_height()}')\n"
+        "        break\n"
+        "    time.sleep(0.1)\n"
+        "else:\n"
+        "    print('NONE')\n",
+        encoding="utf-8",
+    )
+    r = sh([sys.executable, str(reader), str(path)], timeout=40)
+    out = r.stdout.strip().splitlines()
+    if not out or out[-1] == "NONE" or "x" not in out[-1]:
+        return None
+    w, h = (int(v) for v in out[-1].split("x"))
+    return w, h
+
+
+def test_annotation_roundtrip(tmp: Path) -> None:
+    """框选 → 画矩形 → 复制，校验导出的像素里标注落在正确位置。"""
+    print("\n[附] 端到端标注：矩形画在哪，导出里就在哪")
+    x0, y0, x1, y1 = 400, 300, 1000, 700      # 选区 600×400（根像素）
+    rx0, ry0, rx1, ry1 = 500, 400, 800, 600    # 矩形在屏幕上的位置
+    send("shot")
+    t0 = time.time()
+    while time.time() - t0 < 20 and not find_overlay():
+        time.sleep(0.3)
+    if not find_overlay():
+        check("标注用例：覆盖层出现", False, "未出现")
+        return
+    t0 = time.time()
+    while time.time() - t0 < 6 and WINDOW_TITLE not in active_window_name():
+        time.sleep(0.25)
+    drag(x0, y0, x1, y1)
+    sh(["xdotool", "key", "--clearmodifiers", "r"])   # 矩形工具
+    time.sleep(0.3)
+    drag(rx0, ry0, rx1, ry1)
+    time.sleep(0.4)
+    sh(["xdotool", "key", "--clearmodifiers", "Return"])
+    t0 = time.time()
+    while time.time() - t0 < 10 and find_overlay() is not None:
+        time.sleep(0.3)
+
+    png = tmp / "annotated_clip.png"
+    size = read_clipboard_png(png)
+    check("标注用例：剪贴板尺寸 = 框选尺寸", size == (x1 - x0, y1 - y0),
+          f"{size} 期望 {(x1 - x0, y1 - y0)}")
+    if size is None or not png.is_file():
+        return
+    from PIL import Image  # noqa: PLC0415
+
+    img = Image.open(png).convert("RGB")
+    px = img.load()
+
+    def has_stroke(bx0, by0, bx1, by1) -> bool:
+        return any(px[x, y][0] > 180 and px[x, y][1] < 90 and px[x, y][2] < 90
+                   for y in range(by0, by1) for x in range(bx0, bx1))
+
+    # 期望：矩形相对选区的坐标 = 屏幕坐标 - 选区原点
+    ox, oy = rx0 - x0, ry0 - y0
+    ex, ey = rx1 - x0, ry1 - y0
+    m = 8   # 边框容差
+    check("标注用例：矩形上边落在正确位置", has_stroke(ox, oy, ex, oy + m))
+    check("标注用例：矩形下边落在正确位置", has_stroke(ox, ey - m, ex, ey))
+    check("标注用例：矩形左边落在正确位置", has_stroke(ox, oy, ox + m, ey))
+    check("标注用例：矩形右边落在正确位置", has_stroke(ex - m, oy, ex, ey))
+    check("标注用例：矩形内部没有被涂满",
+          not has_stroke(ox + m + 2, oy + m + 2, ex - m - 2, ey - m - 2))
+    img.save(tmp / "annotated_evidence.png")
+
+
 def main() -> int:
     keep = "--keep" in sys.argv
     tmp = Path(tempfile.mkdtemp(prefix="snapctrlalt-e2e-"))
@@ -271,6 +368,9 @@ def main() -> int:
         check("Esc 取消后覆盖层关闭", find_overlay() is None)
         log_txt = (tmp / "app.log").read_text(errors="replace")
         check("取消有记录", "已取消截图" in log_txt, _pick(log_txt, "已取消"))
+
+        # 7b. 标注链路：真鼠标画矩形 → 复制 → 校验像素位置
+        test_annotation_roundtrip(tmp)
 
         # 8. 退出
         check("IPC 退出成功", send("quit"))

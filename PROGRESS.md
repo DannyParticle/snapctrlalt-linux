@@ -13,9 +13,9 @@
 | `packaging/build-deb.sh` + `packaging/debian/*` | ✅ 构建可复现 |
 | `install.sh` 适配新结构 | ✅ |
 | README / CHANGELOG 更新 | ✅ |
-| 回归 / 坐标专项 / 端到端测试 | ✅ 54 + 36 + 22 全通过 |
+| 回归 / 坐标专项 / 端到端测试 | ✅ 54 + 36 + 28 全通过 |
 
-产物：`dist/snapctrlalt_1.2.1_all.deb`（88K，installed 432 KiB，sha256 见构建输出）
+产物：`dist/snapctrlalt_1.2.2_all.deb`（88K，installed 432 KiB，sha256 见构建输出）
 
 1.2.1 追加：多显示器负原点的钳制修正、启动器软链健壮性、debhelper 缺失时的
 明确提示、坐标测试扩到 36 项（负原点 + 分数缩放全屏扫描）。
@@ -54,7 +54,7 @@ share/applications/       snapctrlalt.desktop
 share/icons/hicolor/      各尺寸 PNG + scalable SVG
 packaging/build-deb.sh    构建 deb（不依赖 debhelper，可复现）
 packaging/debian/         control / changelog / copyright / postinst / prerm / postrm
-tests/                    test_overlay(54) / test_coords(36) / test_gui_e2e(22)
+tests/                    test_overlay(54) / test_coords(36) / test_gui_e2e(28)
 tools/                    make_icons / diagnose / perf
 snapctrlalt.sh            源码目录启动脚本
 install.sh                用户级安装（~/.local）
@@ -69,7 +69,7 @@ sudo apt install ./dist/*.deb        # 安装（默认不开自启）
 ./snapctrlalt.sh --once              # 截一次手动核对
 python3 tests/test_overlay.py        # 界面回归 54 项
 python3 tests/test_coords.py         # 坐标专项 36 项（含逐像素验证）
-python3 tests/test_gui_e2e.py        # 端到端 22 项（真鼠标，约 20 秒）
+python3 tests/test_gui_e2e.py        # 端到端 28 项（真鼠标框选+标注，约 25 秒）
 python3 tools/diagnose.py            # 环境诊断
 ./snapctrlalt.sh --perf              # 帧耗时基准
 ```

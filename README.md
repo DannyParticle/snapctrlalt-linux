@@ -63,7 +63,7 @@ Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴
 
 ```bash
 ./packaging/build-deb.sh                 # 产物在 dist/snapctrlalt_<版本>_all.deb
-sudo apt install ./dist/snapctrlalt_1.2.1_all.deb
+sudo apt install ./dist/snapctrlalt_1.2.2_all.deb
 ```
 
 装完在应用菜单里搜「截图工具」，或直接敲 `snapctrlalt`。
@@ -209,7 +209,7 @@ scrot / maim / ImageMagick `import`，命中就交给它；起不来则回落到
 ```bash
 python3 tests/test_overlay.py     # 界面回归：54 项，离屏跑真实覆盖层对象
 python3 tests/test_coords.py      # 坐标专项：36 项，含「框选==截取」逐像素验证
-python3 tests/test_gui_e2e.py     # 端到端：真窗口 + XTEST 真鼠标拖框 + 真剪贴板（约 20 秒）
+python3 tests/test_gui_e2e.py     # 端到端 28 项：真窗口 + XTEST 真鼠标框选/画标注 + 真剪贴板（约 25 秒）
 ./snapctrlalt.sh --selftest       # 基础自检：配置 / 抓图 / 坐标标定 / 剪贴板 / 热键 / 托盘
 ./snapctrlalt.sh --perf           # 用真实抓图尺寸测各交互路径帧耗时
 ./packaging/build-deb.sh          # 构建 deb（构建前自动跑 overlay + coords 测试）

@@ -1,3 +1,13 @@
+snapctrlalt (1.2.2) unstable; urgency=medium
+
+  * The end-to-end suite now draws a rectangle with real mouse input and checks
+    the exported pixels: the stroke has to land on all four expected edges and
+    the interior has to stay untouched.  This closes the last gap in the
+    "what you select is what you get" guarantee -- the annotation path was
+    previously only covered offscreen.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Fri, 25 Sep 2026 23:59:00 +0800
+
 snapctrlalt (1.2.1) unstable; urgency=medium
 
   * Fixed the selection bounds on multi-monitor desktops whose virtual screen
