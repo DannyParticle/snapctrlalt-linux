@@ -362,6 +362,12 @@ def draw_icon(cr: cairo.Context, kind: str, size: float, color=ICON_COLOR) -> No
     elif kind == "cancel":
         line(6, 6, 18, 18)
         line(18, 6, 6, 18)
+    elif kind == "copy":
+        # 剪贴板：底板 + 顶部的夹子
+        rect(5, 6, 19, 21, 2)
+        rect(9, 3.5, 15, 8.5, 1.5)
+        line(9, 12, 15, 12)
+        line(9, 15.5, 15, 15.5)
     elif kind == "finish":
         cr.move_to(5 * u, 12.5 * u)
         cr.line_to(10 * u, 17.5 * u)
@@ -524,6 +530,8 @@ class ShotOverlay:
         self._mag_cache: dict[tuple[int, int], cairo.Surface] = {}
         self._tb_surf: cairo.Surface | None = None
         self._tb_key: tuple | None = None
+        # 工具栏位置要在这里就给初值：首次绘制之前若发生点击，_on_press 会读它
+        self._tb_pos: tuple[float, float, float, float] | None = None
         self._frames = 0
         self._frame_ms = 0.0
         self._ptr_checked_at = 0.0
@@ -1279,10 +1287,11 @@ class ShotOverlay:
         groups.append(cur)
         cur = []
 
+        add("copy", "复制到剪贴板并关闭 (Enter)", "finish")
         add("save", "保存为文件… (Ctrl+S)", "save")
         add("pin", "贴到桌面 (Ctrl+T)", "pin")
-        add("cancel", "取消 (Esc / 右键)", "cancel")
-        add("finish", "复制到剪贴板并关闭 (Enter)", "finish")
+        add("cancel", "取消，不保存 (Esc / 右键)", "cancel")
+        add("finish", "完成并关闭 (Enter)", "finish")
         groups.append(cur)
 
         total_w = pad * 2 + sum(sum(b.w for b in g) + gap * (len(g) - 1) for g in groups) \
@@ -1510,11 +1519,17 @@ class ShotOverlay:
         if self._text_entry is not None:
             self._commit_text()
 
-        # 工具栏点击优先
-        if self.sel is not None and self.mode == "draw":
-            b = self._button_at(x, y)
-            if b is not None:
-                self._activate(b)
+        # 工具栏优先：命中按钮就执行；落在按钮之间的空隙上也只是「什么都不做」。
+        # 不能让它继续往下走 —— 那会被当成「点在选区外」，于是清掉选区、重新
+        # 开始框选，用户的感觉就是「点半天点不中，还得重新截」。
+        if self.sel is not None and self.mode == "draw" and self._tb_pos is not None:
+            tbx, tby, tbw, tbh = self._tb_pos
+            us = self.ui_scale
+            if (tbx * us <= x <= (tbx + tbw) * us
+                    and tby * us <= y <= (tby + tbh) * us):
+                b = self._button_at(x, y)
+                if b is not None:
+                    self._activate(b)
                 return True
 
         self.area.grab_focus()

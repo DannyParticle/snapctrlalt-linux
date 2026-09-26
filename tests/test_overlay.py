@@ -369,6 +369,53 @@ def test_pin(app: FakeApp) -> None:
     o.win.destroy()
 
 
+def test_toolbar_click_does_not_reset_selection(app: FakeApp) -> None:
+    """工具栏上的点击（含按钮之间的空隙）绝不能把选区清掉。
+
+    这是用户实际遇到的问题：点在工具栏按钮之间的空隙上，会因为「落在选区外」
+    而被判成重新框选，于是刚选好的区域没了、得重截一次。
+    """
+    print("\n[12] 工具栏点击不毁选区")
+    o = new_overlay(app)
+    o.ui_scale = 2.0
+    o.sel = (100.0, 100.0, 700.0, 500.0)
+    o.mode = "draw"
+    o._layout_toolbar(o.cr_w, o.cr_h)
+    check("工具栏已排布", o._tb_pos is not None, str(o._tb_pos))
+
+    xs = sorted((b.x, b.x + b.w) for b in o._buttons)
+    gaps = [(xs[i][1] + xs[i + 1][0]) / 2.0
+            for i in range(len(xs) - 1) if xs[i + 1][0] - xs[i][1] > 4]
+    check("工具栏里确实存在分组空隙", bool(gaps), f"{len(gaps)} 处")
+
+    if gaps:
+        gx = int(gaps[0] * o.ui_scale)
+        gy = int((o._tb_pos[1] + o._tb_pos[3] / 2.0) * o.ui_scale)
+        before = o.sel
+        o._on_press(o.win, _FakeEvent(x=gx, y=gy, button=1))
+        check("点空隙：选区保持不变", o.sel == before, f"{before} -> {o.sel}")
+        check("点空隙：仍处于标注态", o.mode == "draw", o.mode)
+
+    # 真实按钮依然生效
+    o.sel = (100.0, 100.0, 700.0, 500.0)
+    o.mode = "draw"
+    o._layout_toolbar(o.cr_w, o.cr_h)
+    b = o._buttons[0]
+    o._on_press(o.win, _FakeEvent(
+        x=int((b.x + b.w / 2) * o.ui_scale),
+        y=int((b.y + b.h / 2) * o.ui_scale), button=1))
+    check("点真实按钮：工具切换生效", o.tool == b.data, f"tool={o.tool}")
+
+    # 选区外的空白处仍然可以重新框选（原行为不能被改坏）
+    o.sel = (300.0, 200.0, 700.0, 500.0)
+    o.mode = "draw"
+    o._on_press(o.win, _FakeEvent(x=20, y=20, button=1))
+    check("选区外空白处仍可重新框选", o.sel is None and o.mode == "select",
+          f"sel={o.sel} mode={o.mode}")
+    o._drag = None
+    o.win.destroy()
+
+
 def test_cancel(app: FakeApp) -> None:
     print("\n[11] 取消")
     reasons: list[str] = []
@@ -415,7 +462,8 @@ def main() -> int:
     for fn in (test_selection_flow, test_result_matches_selection, test_each_tool,
                test_undo_redo_clear, test_text_entry_flow, test_clip_inside_selection,
                test_scroll_width_and_tools, test_handles_and_move,
-               test_persist_and_finish, test_pin, test_cancel):
+               test_persist_and_finish, test_pin, test_toolbar_click_does_not_reset_selection,
+               test_cancel):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

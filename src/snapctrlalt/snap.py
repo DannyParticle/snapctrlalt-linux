@@ -179,16 +179,32 @@ class App:
             except Exception:  # noqa: BLE001
                 pass
 
+    def resolved_save_dir(self, persist: bool = False) -> Path:
+        """解析保存目录，路径不可用时自动回退。
+
+        配置里存的是绝对路径，把配置拷到另一台电脑就会指向不存在的目录
+        （比如老机器的 /home/某人/图片）。这时不再去「创建」一个陌生的
+        绝对路径，而是回退到本机的系统图片目录，并把配置修正回来。
+        """
+        raw = str(self.cfg.get("save_dir", "") or "").strip()
+        if not raw:
+            return app_settings.pictures_dir()
+        p = Path(raw).expanduser()
+        if p.is_dir():
+            return p
+        # 被删掉或换机器了：回退到系统图片目录
+        fallback = app_settings.pictures_dir()
+        self.notify(f"保存目录 {p} 不存在，已改为 {fallback}")
+        if persist:
+            self.cfg["save_dir"] = ""
+            self._save_cfg()
+        return fallback
+
     def save_image(self, img: Image.Image, silent: bool = False) -> str | None:
         """按配置把图存进保存目录（自动文件名）。"""
         fmt = str(self.cfg.get("save_format", "png")).lower()
         ext = "jpg" if fmt in ("jpg", "jpeg") else fmt
-        directory = self.cfg.get("save_dir") or str(app_settings.pictures_dir())
-        try:
-            d = Path(directory).expanduser()
-            d.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            d = app_settings.pictures_dir()
+        d = self.resolved_save_dir(persist=True)
         name = time.strftime("Screenshot_%Y-%m-%d_%H-%M-%S") + f".{ext}"
         path = d / name
         try:
@@ -224,10 +240,11 @@ class App:
         )
         dlg.add_buttons("取消", Gtk.ResponseType.CANCEL, "保存", Gtk.ResponseType.OK)
         dlg.set_do_overwrite_confirmation(True)
-        start = self.cfg.get("last_save_dir") or self.cfg.get("save_dir") \
-            or str(app_settings.pictures_dir())
+        start = Path(str(self.cfg.get("last_save_dir") or "")).expanduser()
+        if not start.is_dir():
+            start = self.resolved_save_dir()
         try:
-            dlg.set_current_folder(str(Path(start).expanduser()))
+            dlg.set_current_folder(str(start))
         except Exception:  # noqa: BLE001
             pass
         dlg.set_current_name(time.strftime("Screenshot_%Y-%m-%d_%H-%M-%S.png"))
@@ -696,20 +713,29 @@ class App:
                 f"，退出热键 {'已生效 ✓' if got.get('quit') else '未生效'}")
 
         # ---- 行为 ----
-        grid2 = section("完成后的动作")
+        grid2 = section("按 Enter / 点工具栏的复制按钮之后")
+        note = Gtk.Label(label="截图始终会复制到剪贴板；下面决定要不要顺便存一份文件。")
+        note.set_halign(Gtk.Align.START)
+        note.set_xalign(0)
+        note.set_line_wrap(True)
+        note.get_style_context().add_class("dim-label")
+        grid2.attach(note, 1, row[0], 1, 1)
+        row[0] += 1
+
         combo = Gtk.ComboBoxText()
-        for cid, label in (("copy", "复制到剪贴板"),
-                           ("copy_save", "复制到剪贴板，并另存一份"),
-                           ("save", "只保存到文件")):
+        for cid, label in (("copy", "只复制到剪贴板（推荐）"),
+                           ("copy_save", "复制到剪贴板，同时另存一份"),
+                           ("save", "只另存为文件，不复制")):
             combo.append(cid, label)
         cur = str(self.cfg.get("after_capture", "copy"))
         combo.set_active_id(cur if cur in ("copy", "copy_save", "save") else "copy")
-        add_row(grid2, "完成后", combo)
+        add_row(grid2, "同时", combo)
 
         box_dir = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         ent_dir = Gtk.Entry()
         ent_dir.set_text(str(self.cfg.get("save_dir", "")))
-        ent_dir.set_placeholder_text(f"默认：{app_settings.pictures_dir()}")
+        ent_dir.set_placeholder_text(
+            f"留空 = 系统图片目录（当前：{self.resolved_save_dir()}）")
         btn_dir = Gtk.Button(label="选择…")
         box_dir.pack_start(ent_dir, True, True, 0)
         box_dir.pack_start(btn_dir, False, False, 0)

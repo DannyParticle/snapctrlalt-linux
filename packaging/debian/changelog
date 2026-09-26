@@ -1,3 +1,25 @@
+snapctrlalt (1.2.4) unstable; urgency=medium
+
+  * Fixed clicks on the annotation toolbar resetting the selection.  A click
+    that landed between two buttons was not recognised as a button, fell
+    through to the "clicked outside the selection" branch, and started a new
+    selection -- so choosing a tool often threw away the region and forced a
+    second capture.  Any click inside the toolbar rectangle is now consumed by
+    the toolbar; clicks on empty canvas still start a new selection.
+  * Added an explicit "copy to clipboard" button (clipboard icon) to the
+    toolbar.  The confirmation tick was the only way to copy and it was easy to
+    mistake for "save", which opens a file dialog.
+  * Toolbar tooltips and the settings wording now state plainly that finishing
+    always copies to the clipboard and that the "after" option only decides
+    whether a file is written as well.
+  * A configured save directory that no longer exists (for example a config
+    copied to another machine) now falls back to the system pictures directory
+    and repairs the setting instead of creating a stranger's absolute path.
+  * Initialised the toolbar rectangle before the first paint; a click arriving
+    before the overlay had drawn could raise AttributeError.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Sun, 27 Sep 2026 02:10:00 +0800
+
 snapctrlalt (1.2.3) unstable; urgency=medium
 
   * Fixed the settings window never appearing.  It crashed while being built:
