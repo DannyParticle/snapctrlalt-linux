@@ -1,3 +1,24 @@
+snapctrlalt (1.3.1) unstable; urgency=medium
+
+  * The annotation toolbar vanished for anyone who had an external screenshot
+    tool installed.  "prefer external tool" defaulted to on, so pressing the
+    hotkey handed the capture to Flameshot/Spectacle and the user saw that
+    program's window instead of this overlay.  The default is now off; switch
+    it on from the tray menu or the settings window if you want it.
+  * The toolbar is now laid out in two rows (tools on the first, colours,
+    widths and actions on the second).  A single row of 29 buttons was 922 px
+    wide, which pushed it to the screen edge for narrow selections.
+  * Fixed the toolbar being drawn outside the clip region and disappearing
+    entirely.  GTK pre-scales the drawing context on HiDPI (a 2880 px canvas
+    comes with a 1440 px clip), the overlay then applied ui_scale on top of
+    that, so every toolbar coordinate landed past the clip and the whole bar
+    was discarded.  The draw handler now resets the transform and ui_scale is
+    applied exactly once, while laying out.
+  * The layout no longer multiplies the UI scale into its design constants on
+    every call, which had been doubling the bar on each frame.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Mon, 28 Sep 2026 19:10:00 +0800
+
 snapctrlalt (1.3.0) unstable; urgency=medium
 
   * Fixed the annotation toolbar running off the screen for narrow or tall

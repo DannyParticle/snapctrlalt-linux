@@ -383,18 +383,38 @@ def test_toolbar_click_does_not_reset_selection(app: FakeApp) -> None:
     o._layout_toolbar()
     check("工具栏已排布", o._tb_pos is not None, str(o._tb_pos))
 
-    xs = sorted((b.x, b.x + b.w) for b in o._buttons)
-    gaps = [(xs[i][1] + xs[i + 1][0]) / 2.0
-            for i in range(len(xs) - 1) if xs[i + 1][0] - xs[i][1] > 4]
-    check("工具栏里确实存在分组空隙", bool(gaps), f"{len(gaps)} 处")
+    # 双排布局：按排分别找分组空隙
+    rows: dict[float, list] = {}
+    for b in o._buttons:
+        rows.setdefault(b.y, []).append(b)
+    gaps: list[tuple[float, float]] = []
+    for ry, btns in rows.items():
+        btns.sort(key=lambda b: b.x)
+        for i in range(len(btns) - 1):
+            gap_px = btns[i + 1].x - (btns[i].x + btns[i].w)
+            if gap_px > 4:
+                gaps.append((btns[i].x + btns[i].w + gap_px / 2.0, ry + btns[i].h / 2.0))
+    check("工具栏里确实存在分组空隙", bool(gaps), f"{len(gaps)} 处，{len(rows)} 排")
 
     if gaps:
-        gx = int(gaps[0] * o.ui_scale)
-        gy = int((o._tb_pos[1] + o._tb_pos[3] / 2.0) * o.ui_scale)
+        gx = int(gaps[0][0])          # 按钮矩形已是画布坐标
+        gy = int(gaps[0][1])
         before = o.sel
         o._on_press(o.win, _FakeEvent(x=gx, y=gy, button=1))
         check("点空隙：选区保持不变", o.sel == before, f"{before} -> {o.sel}")
         check("点空隙：仍处于标注态", o.mode == "draw", o.mode)
+
+    check("工具栏是双排布局",
+          len({round(b.y) for b in o._buttons}) == 2,
+          f"排数={len({round(b.y) for b in o._buttons})}")
+    row1 = [b for b in o._buttons if round(b.y) == min(round(x.y) for x in o._buttons)]
+    row2 = [b for b in o._buttons if b not in row1]
+    check("第一排全是标注工具", len(row1) == len(ov.TOOL_ORDER),
+          f"{len(row1)} 个")
+    check("第二排是颜色/线宽/操作", len(row2) > 10, f"{len(row2)} 个")
+    # 单排 29 个按钮在 ui_scale=2 下约 1844 画布像素；双排应显著更窄
+    tb_w = o._tb_pos[2]
+    check("双排后宽度明显收窄（<1400 画布像素）", tb_w < 1400, f"{tb_w:.0f}")
 
     # 真实按钮依然生效
     o.sel = (100.0, 100.0, 700.0, 500.0)
@@ -402,14 +422,21 @@ def test_toolbar_click_does_not_reset_selection(app: FakeApp) -> None:
     o._layout_toolbar()
     b = o._buttons[0]
     o._on_press(o.win, _FakeEvent(
-        x=int((b.x + b.w / 2) * o.ui_scale),
-        y=int((b.y + b.h / 2) * o.ui_scale), button=1))
+        x=int(b.x + b.w / 2),
+        y=int(b.y + b.h / 2), button=1))
     check("点真实按钮：工具切换生效", o.tool == b.data, f"tool={o.tool}")
 
     # 选区外的空白处仍然可以重新框选（原行为不能被改坏）
-    o.sel = (300.0, 200.0, 700.0, 500.0)
+    # 注意：要避开工具栏矩形本身 —— 它可能盖住画布一角，落在它上面的点击
+    # 本就该被工具栏吃掉。这里选一个明确在工具栏与选区之外的空白点。
+    o.sel = (300.0, 600.0, 700.0, 900.0)
     o.mode = "draw"
-    o._on_press(o.win, _FakeEvent(x=20, y=20, button=1))
+    o._layout_toolbar()
+    tbx, tby, tbw, tbh = o._tb_pos
+    px_, py_ = tbx + tbw + 40, tby + tbh + 40      # 工具栏右下方
+    inside_tb = tbx <= px_ <= tbx + tbw and tby <= py_ <= tby + tbh
+    check("测试点确实在工具栏之外", not inside_tb, f"({px_:.0f},{py_:.0f})")
+    o._on_press(o.win, _FakeEvent(x=int(px_), y=int(py_), button=1))
     check("选区外空白处仍可重新框选", o.sel is None and o.mode == "select",
           f"sel={o.sel} mode={o.mode}")
     o._drag = None
@@ -462,8 +489,10 @@ def test_toolbar_reachable_for_any_selection(app: FakeApp) -> None:
     """无论选区什么形状，工具栏都必须完整落在屏幕内、每个按钮都点得到。
 
     用户报的「窄截图时最左/最右功能点不到」就是这个不变量被破坏了：
-    布局按「设计尺寸」摆位置，绘制又整体乘 ui_scale，结果工具栏被放大后跑到
-    屏幕外（实测落在 x 2056..3900，而屏幕只有 2880 宽）。
+    早期布局用「设计尺寸」摆位置、绘制又整体乘 ui_scale，工具栏被放大后跑到
+    屏幕外（实测落在 x 2056..3900，而屏幕只有 2880 宽）；后来又在已被 GTK
+    缩放过的上下文里二次缩放，整条落到 clip 之外而**完全消失**。现在
+    ui_scale 只在布局里乘一次，矩形即最终画布矩形，绘制不再缩放。
     """
     print("\n[15] 工具栏对任意选区都完整可见可点")
     W, H = 2880, 1800
@@ -489,15 +518,12 @@ def test_toolbar_reachable_for_any_selection(app: FakeApp) -> None:
         o.tool = ov.T_RECT
         o._layout_toolbar()
         bx, by, bw, bh = o._tb_pos
-        us = o.ui_scale
-        # 绘制阶段的最终屏幕矩形：先画再缩放，所以位置和尺寸都被放大
-        sx0, sy0 = bx * us, by * us
-        sx1, sy1 = (bx + bw) * us, (by + bh) * us
-        inside = sx0 >= 0 and sy0 >= 0 and sx1 <= W and sy1 <= H
+        # ui_scale 已在布局里算进尺寸，_tb_pos 就是最终画布矩形
+        inside = bx >= 0 and by >= 0 and bx + bw <= W and by + bh <= H
         check(f"{name}：工具栏完整在屏幕内", inside,
-              f"屏幕矩形 {sx0:.0f},{sy0:.0f}..{sx1:.0f},{sy1:.0f}（屏幕 {W}×{H}）")
+              f"矩形 {bx:.0f},{by:.0f}..{bx + bw:.0f},{by + bh:.0f}（画布 {W}×{H}）")
         missed = [b.kind for b in o._buttons
-                  if o._button_at((b.x + b.w / 2) * us, (b.y + b.h / 2) * us) is not b]
+                  if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
         check(f"{name}：{len(o._buttons)} 个按钮全部可点", not missed, str(missed[:4]))
         o.win.destroy()
 

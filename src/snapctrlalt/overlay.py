@@ -765,6 +765,25 @@ class ShotOverlay:
 
     # ------------------------------------------------------------ 基础
 
+    def _canvas_rect(self) -> tuple[float, float]:
+        """画布在设备坐标下实际可见的宽高。
+
+        GTK 给 cr 预设的设备缩放会让这个值小于画布本身（本机 2880 画布 →
+        1440×900 设备）。所有「能看见多大」的判断与 UI 绘制都以它为准。
+        """
+        alloc_w = self.area.get_allocated_width()
+        alloc_h = self.area.get_allocated_height()
+        if alloc_w > 1 and alloc_h > 1:
+            return float(alloc_w), float(alloc_h)
+        k = 1.0
+        try:
+            gw = self.win.get_window()
+            if gw is not None:
+                k = float(gw.get_scale_factor() or 1)
+        except Exception:  # noqa: BLE001
+            k = 1.0
+        return self.cr_w / k, self.cr_h / k
+
     @property
     def disp_w(self) -> float:
         alloc = self.area.get_allocated_width()
@@ -879,18 +898,20 @@ class ShotOverlay:
 
     def _on_draw(self, _widget, cr) -> bool:
         t0 = time.perf_counter()
-        w, h = self.disp_w, self.disp_h
+        # GTK 在 HiDPI 上会预先给 cr 设好设备缩放（本机 2880 画布 → 1440 逻辑，
+        # 即已乘 0.5）。**必须在开头把它重置掉**：否则后面按画布坐标画的
+        # 工具栏会被再缩一次而落到 clip 之外，整条被裁掉（实测就是这个原因——
+        # clip 只有 0..1440，工具栏被画到 y=920 就全没了）。
+        # 重置之后：画布坐标 == 设备坐标，想缩什么自己明确地缩。
         cr.save()
         cr.set_operator(cairo.OPERATOR_SOURCE)
         cr.set_source_rgb(0, 0, 0)
         cr.paint()
         cr.restore()
+        cr.identity_matrix()
 
-        # 画布坐标系 = GTK 事件坐标；窗口分配尺寸可能更小（HiDPI），
-        # 这里统一缩放到画布坐标系后，所有绘制代码都用画布单位。
-        k = (w / float(self.cr_w)) if self.cr_w else 1.0
-        if abs(k - 1.0) > 1e-6:
-            cr.scale(k, k)
+        cw, ch = self._canvas_rect()
+        k = (cw / float(self.cr_w)) if self.cr_w else 1.0
         sel = self.sel
         if sel is None:
             cr.set_source_surface(self._ensure_dim(), 0, 0)
@@ -919,12 +940,12 @@ class ShotOverlay:
             if self._drag and self._drag.get("preview"):
                 self._draw_preview(cr, self._drag)
 
-        # UI 层单独缩放：这里之后一律用 UI 单位绘制（不参与坐标换算）
-        us = self.ui_scale
+        # UI 层（工具栏/放大镜/提示）：坐标是画布坐标，这里只做一次设备缩放 k，
+        # 让它们画在真实设备像素上（否则在 2880 画布 / 1440 设备的机器上会糊）。
         cr.save()
-        if abs(us - 1.0) > 1e-6:
-            cr.scale(us, us)
-        uw, uh = w / us, h / us
+        if abs(k - 1.0) > 1e-6:
+            cr.scale(k, k)
+        uw, uh = self.cr_w, self.cr_h
         if sel is not None and self.mode == "draw":
             self._draw_toolbar(cr, uw, uh)
         if sel is None and not self._drag and self._cursor[0] >= 0:
@@ -1218,7 +1239,7 @@ class ShotOverlay:
 
     def _draw_magnifier(self, cr, dw, dh) -> None:
         # 进来的 dw/dh 与上下文都是 UI 单位，光标先换算过来
-        cx, cy = self._cursor[0] / self.ui_scale, self._cursor[1] / self.ui_scale
+        cx, cy = self._cursor
         ix, iy = self._to_img(*self._cursor)
         px, py = int(ix), int(iy)
         half = MAG_SIZE // MAG_ZOOM // 2
@@ -1324,59 +1345,85 @@ class ShotOverlay:
     def _layout_toolbar(self) -> None:
         """计算工具栏位置与每个按钮的矩形，**统一使用画布坐标**。
 
+        布局是**两排**的：
+
+        * 第一排：11 个标注工具；
+        * 第二排：颜色 · 线宽 · 撤销/重做/清空 · 复制/另存/贴图/取消/完成。
+
+        排成两排的原因：单排 29 个按钮宽达 922px，窄选区时会把整条工具栏顶到
+        屏幕边缘、离选区很远（用户实测「窄截图时两端点不到」）。两排后宽度约
+        减半，既贴得住选区，也给屏幕上留出余地。
+
         绘制时整体乘 ``ui_scale`` 放大（``_draw_toolbar``），命中测试反过来除
-        （``_button_at``）。两套坐标不再混用。
+        （``_button_at``）。
         """
-        bs = 30           # 按钮边长
-        gap = 2
-        pad = 6
-        row_h = bs + gap
-        groups: list[list[_Button]] = []
-        cur: list[_Button] = []
+        # UI 尺寸乘上 ui_scale：**一次到位**，之后所有坐标都是画布坐标，
+        # 绘制/命中测试都不再有任何缩放。这样就不会再出现「漏乘/重乘」这类
+        # 坐标事故（工具栏消失、跑到屏幕外、两端点不到，都出在这个环节）。
+        us = self.ui_scale
+        BS = 30           # 设计基准尺寸（不要就地放大，否则每次调用都会再乘一次）
+        GAP = 2
+        PAD = 6
+        SEP = 10
+        ROW_GAP = 4
+        bs = BS * us
+        gap = GAP * us
+        pad = PAD * us
+        sep = SEP * us
+        row_h = (BS + ROW_GAP) * us
 
-        def add(kind, tip, action, data=None, w=bs):
-            nonlocal cur
-            b = _Button(kind, 0, 0, w, bs, tip, action, data)
-            cur.append(b)
-            return b
+        def build_row(spec) -> list[list[_Button]]:
+            """spec: [(kind, tip, action, data, width), ...] 或 "sep" 表示换分组。"""
+            groups: list[list[_Button]] = []
+            cur: list[_Button] = []
+            for item in spec:
+                if item == "sep":
+                    if cur:
+                        groups.append(cur)
+                        cur = []
+                    continue
+                kind, tip, action, data = item[0], item[1], item[2], item[3]
+                w = (item[4] * us) if len(item) > 4 else bs
+                cur.append(_Button(kind, 0, 0, w, bs, tip, action, data))
+            if cur:
+                groups.append(cur)
+            return groups
 
-        for tid in TOOL_ORDER:
-            add(tid, TOOL_TIPS[tid], "tool", tid)
-        groups.append(cur)
-        cur = []
+        # ---- 第一排：标注工具 ----
+        row1_spec = [(tid, TOOL_TIPS[tid], "tool", tid) for tid in TOOL_ORDER]
 
-        add("colorwheel", "自定义颜色…", "custom_color", None)
-        for c in COLORS:
-            add("swatch", f"颜色 {c.upper()}", "color", c, w=22)
-        groups.append(cur)
-        cur = []
+        # ---- 第二排：颜色 / 线宽 / 编辑 / 收尾 ----
+        row2_spec = [("colorwheel", "自定义颜色…", "custom_color", None)]
+        row2_spec += [("swatch", f"颜色 {c.upper()}", "color", c, 22) for c in COLORS]
+        row2_spec.append("sep")
+        row2_spec += [(k, f"线宽 {w}px", "width", w)
+                      for k, w in (("width", WIDTHS[0]), ("width2", WIDTHS[1]),
+                                   ("width3", WIDTHS[2]))]
+        row2_spec.append("sep")
+        row2_spec += [("undo", "撤销 (Ctrl+Z)", "undo", None),
+                      ("redo", "重做 (Ctrl+Shift+Z)", "redo", None),
+                      ("clear", "清空所有标注", "clear", None)]
+        row2_spec.append("sep")
+        row2_spec += [("copy", "复制到剪贴板并关闭 (Enter)", "finish", None),
+                      ("save", "保存为文件… (Ctrl+S)", "save", None),
+                      ("pin", "贴到桌面 (Ctrl+T)", "pin", None),
+                      ("cancel", "取消，不保存 (Esc / 右键)", "cancel", None),
+                      ("finish", "完成并关闭 (Enter)", "finish", None)]
 
-        for kind, wv in (("width", WIDTHS[0]), ("width2", WIDTHS[1]), ("width3", WIDTHS[2])):
-            add(kind, f"线宽 {wv}px", "width", wv)
-        groups.append(cur)
-        cur = []
+        rows = [build_row(row1_spec), build_row(row2_spec)]
 
-        add("undo", "撤销 (Ctrl+Z)", "undo")
-        add("redo", "重做 (Ctrl+Shift+Z)", "redo")
-        add("clear", "清空所有标注", "clear")
-        groups.append(cur)
-        cur = []
+        def row_width(groups) -> float:
+            return sum(sum(b.w for b in g) + gap * (len(g) - 1) for g in groups) \
+                + sep * (len(groups) - 1)
 
-        add("copy", "复制到剪贴板并关闭 (Enter)", "finish")
-        add("save", "保存为文件… (Ctrl+S)", "save")
-        add("pin", "贴到桌面 (Ctrl+T)", "pin")
-        add("cancel", "取消，不保存 (Esc / 右键)", "cancel")
-        add("finish", "完成并关闭 (Enter)", "finish")
-        groups.append(cur)
-
-        total_w = pad * 2 + sum(sum(b.w for b in g) + gap * (len(g) - 1) for g in groups) \
-            + 10 * (len(groups) - 1)
-        bar_h = pad * 2 + row_h - gap
+        content_w = max(row_width(r) for r in rows)
+        total_w = pad * 2 + content_w
+        bar_h = pad * 2 + row_h * len(rows) - ROW_GAP * us
 
         # ---- 定位：全部用画布坐标（= X11 根像素）----
-        # 早期这里混用了两套单位：dw/dh 是「UI 单位下的窗口尺寸」，而 _to_disp
-        # 返回画布坐标，两者直接比较 —— ui_scale=2 时就会拿画布 1300 和 UI 上限
-        # 900 比大小，工具栏被丢到屏幕外（真机实测 y=3196，画布高只有 1800）。
+        # 早期混用了两套单位：dw/dh 是「UI 单位下的窗口尺寸」，而 _to_disp 返回
+        # 画布坐标，两者直接比较 —— ui_scale=2 时等于拿画布 1300 和 UI 上限 900
+        # 比大小，工具栏被丢到屏幕外（实测 y=3196，画布高只有 1800）。
         W, H = float(self.cr_w), float(self.cr_h)
         if self.sel is None:
             cx0 = cy0 = cx1 = cy1 = 0.0
@@ -1384,58 +1431,54 @@ class ShotOverlay:
             cx0, cy0 = self._to_disp(self.sel[0], self.sel[1])
             cx1, cy1 = self._to_disp(self.sel[2], self.sel[3])
 
-        # 屏幕上真正占多大：布局尺寸是「设计尺寸」，绘制时整体乘 ui_scale。
-        # 注意：绘制阶段是「先画再缩放」，所以缩放同样放大了位置。要让最终
-        # 屏幕矩形落在可视区内，得先按放大后的尺寸钳制，再反推回设计坐标：
-        #     屏幕矩形 = (bx*us, by*us, total_w*us, bar_h*us)
-        #     要求 屏幕上 bx*us + total_w*us <= W
-        # 早期忽略了这一点：按 922 宽摆好位置再放大成 1844 画出去，工具栏跑到
-        # 屏幕外（实测 x 2056..3900，屏幕只有 2880 宽），用户感觉就是
-        # 「窄截图时两端的功能点不到、点了反而重新框选」。
-        us = self.ui_scale
-        vis_w = total_w * us
-        vis_h = bar_h * us
-        margin = 8.0
+        # 尺寸即最终画布尺寸，直接钳制到可视范围（8 设计像素 × us）
+        margin = 8.0 * us
 
-        # 水平：与选区左缘对齐（窄选区时工具栏比选区宽得多，居中会把两端顶出
-        # 屏幕），再把最终矩形压回可视范围
-        vx = cx0 * us
-        if vx + vis_w > W - margin:
-            vx = W - margin - vis_w
-        if vx < margin:
-            vx = margin
-        bx = vx / us
+        # 水平：与选区左缘对齐（窄选区时工具栏比选区宽，居中会把两端顶出屏幕）
+        bx = cx0
+        if bx + total_w > W - margin:
+            bx = W - margin - total_w
+        if bx < margin:
+            bx = margin
 
-        # 竖直：优先选区下方，放不下就上方；都放不下时贴下边缘
-        # （此时必然与选区重叠，但至少完整可见、点得到）
-        vy = (cy1 + 10) * us
-        if vy + vis_h > H:
-            vy = (cy0 - 10) * us - vis_h
-        # 选区又高又贴边时（比如整屏选中、或贴着屏幕底部），上方也放不下，
-        # 此时只能让它压在选区上 —— 但必须保证「整条可见可点」，否则又变成
-        # 「按钮点不到」。所以最后统一夹进可视区间。
-        vy = min(max(vy, margin), max(margin, H - vis_h - margin))
-        by = vy / us
+        # 竖直：优先选区下方，放不下就上方
+        by = cy1 + 10 * us
+        if by + bar_h > H:
+            by = cy0 - 10 * us - bar_h
+        # 选区又高又贴边时（整屏选中、或贴着屏幕底部）上方也放不下，只能压在
+        # 选区上 —— 但必须整条可见可点，所以最后统一夹进可视区间。
+        by = min(max(by, margin), max(margin, H - bar_h - margin))
 
         self._tb_pos = (bx, by, total_w, bar_h)
-        x = bx + pad
-        for gi, g in enumerate(groups):
-            for b in g:
-                b.x, b.y = x, by + pad
-                x += b.w + gap
-            x -= gap
-            if gi != len(groups) - 1:
-                x += 10
-        self._buttons = [b for g in groups for b in g]
+        self._tb_rows = len(rows)
+        # 逐排、逐组摆放；用内容居中，避免两排左右参差
+        all_buttons: list[_Button] = []
+        for ri, groups in enumerate(rows):
+            x = bx + (total_w - row_width(groups)) / 2.0
+            y = by + pad + ri * row_h
+            for gi, g in enumerate(groups):
+                for b in g:
+                    b.x, b.y = x, y
+                    x += b.w + gap
+                x -= gap
+                if gi != len(groups) - 1:
+                    x += sep
+            all_buttons.extend(b for g in groups for b in g)
+        self._buttons = all_buttons
 
     def _draw_toolbar(self, cr, dw, dh) -> None:
-        """画工具栏。位置与按钮都是画布坐标，这里整体按 ui_scale 放大绘制。"""
+        """画工具栏。
+
+        **不做任何缩放**：``_layout_toolbar`` 已经把 ``ui_scale`` 算进设计尺寸里
+        （见那里的说明），所以这里拿到的矩形就是最终画布矩形，直接画。
+
+        早期这里又乘了一次 ``ui_scale``，结果是「在已经被缩放 0.5 的上下文里再
+        放大 2 倍」—— 工具栏跑到 clip 之外被整条裁掉（实测 clip 是 0..1440，
+        而它被画到 x 1400..2524）。表现就是**工具栏整个不见了**。
+        """
         self._layout_toolbar()
         bx, by, bw, bh = self._tb_pos
-        cr.save()
-        cr.scale(self.ui_scale, self.ui_scale)
         self._paint_toolbar(cr, bx, by, bw, bh)
-        cr.restore()
         del dw, dh
 
     def _paint_toolbar(self, cr, bx, by, bw, bh) -> None:
@@ -1450,17 +1493,22 @@ class ShotOverlay:
         cr.stroke()
         cr.restore()
 
-        # 分组竖线
+        # 分组竖线：按排分别判断（两排各有自己的分组间距）
         cr.save()
         cr.set_source_rgba(*SEP)
         cr.set_line_width(1)
-        prev_right = None
+        rows: dict[int, list[_Button]] = {}
         for b in self._buttons:
-            if prev_right is not None and b.x - prev_right > 4:
-                sx = (prev_right + b.x) / 2.0
-                cr.move_to(sx, by + 7)
-                cr.line_to(sx, by + bh - 7)
-            prev_right = b.x + b.w
+            rows.setdefault(round(b.y), []).append(b)
+        for _ry, btns in rows.items():
+            btns.sort(key=lambda b: b.x)
+            for i in range(len(btns) - 1):
+                gap_px = btns[i + 1].x - (btns[i].x + btns[i].w)
+                if gap_px > 4:
+                    sx = btns[i].x + btns[i].w + gap_px / 2.0
+                    top = btns[i].y + 6
+                    cr.move_to(sx, top)
+                    cr.line_to(sx, top + btns[i].h - 12)
         cr.stroke()
         cr.restore()
 
@@ -1512,11 +1560,9 @@ class ShotOverlay:
         return surf
 
     def _button_at(self, x, y) -> _Button | None:
-        """x, y 是画布坐标；按钮矩形是 UI 单位。"""
-        us = self.ui_scale
-        ux, uy = x / us, y / us
+        """x, y 与按钮矩形都是画布坐标（ui_scale 已在布局时算进尺寸）。"""
         for b in self._buttons:
-            if b.hit(ux, uy):
+            if b.hit(x, y):
                 return b
         return None
 
@@ -1625,9 +1671,7 @@ class ShotOverlay:
         # 开始框选，用户的感觉就是「点半天点不中，还得重新截」。
         if self.sel is not None and self.mode == "draw" and self._tb_pos is not None:
             tbx, tby, tbw, tbh = self._tb_pos
-            us = self.ui_scale
-            if (tbx * us <= x <= (tbx + tbw) * us
-                    and tby * us <= y <= (tby + tbh) * us):
+            if tbx <= x <= tbx + tbw and tby <= y <= tby + tbh:
                 b = self._button_at(x, y)
                 if b is not None:
                     self._activate(b)
@@ -1943,6 +1987,7 @@ class ShotOverlay:
         self._overlay_box.add_overlay(e)
         e.set_halign(Gtk.Align.START)
         e.set_valign(Gtk.Align.START)
+        # x/y 是画布（物理）像素；GTK 控件定位用逻辑像素
         e.set_margin_start(int(x / self.ui_scale))
         e.set_margin_top(int(y / self.ui_scale))
         self._text_entry = e

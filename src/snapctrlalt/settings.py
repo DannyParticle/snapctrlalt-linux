@@ -117,7 +117,11 @@ DEFAULTS: dict = {
     "quit_hotkey": "ctrl+alt+shift+q",
     "autostart": False,
     "save_dir": "",
-    "prefer_external": True,          # 对标 Windows 的 prefer_qq：优先让外部截图工具接管
+    # 默认用内置覆盖层。原先默认 True（对标 Windows 版的「优先 QQ 截图」），
+    # 但只要机器上装了 Flameshot / Spectacle 之类，用户按快捷键看到的就成了
+    # **别人的界面**（本该出现的标注工具栏不见了）—— 对交付给别人的工具来说
+    # 这个默认值是错的。要交出去就在托盘菜单或设置里打开。
+    "prefer_external": False,
     "external_cmd": "",               # 自定义外部截图命令，空则自动探测
     "after_capture": "copy",          # copy / copy_save / save
     "copy_to_primary": False,         # 同时写入 X11 PRIMARY 选区（中键粘贴）
