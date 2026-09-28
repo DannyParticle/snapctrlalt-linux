@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from typing import Callable
 
@@ -407,8 +408,54 @@ class _Button:
         return self.x, self.y, self.x + self.w, self.y + self.h
 
 
+def _physical_size_mm() -> tuple[float, float]:
+    """显示器物理尺寸（毫米）。
+
+    只有 RandR 提供毫米信息；Xinerama 只有像素尺寸，**不能**拿来当毫米用
+    （早期就踩过这个坑：宽 2880 被当成 2880mm，算出的 DPI 荒谬地低）。
+    """
+    try:
+        from Xlib import display as xdisplay
+        from Xlib.ext import randr
+
+        d = xdisplay.Display()
+        try:
+            root = d.screen().root
+            res = randr.get_screen_resources(root)
+            for out in res.outputs:
+                info = randr.get_output_info(d, out, res.config_timestamp)
+                if info.crtc and info.mm_width > 0 and info.mm_height > 0:
+                    return float(info.mm_width), float(info.mm_height)
+        finally:
+            try:
+                d.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return 0.0, 0.0
+
+
 def _detect_ui_scale(cfg: dict) -> float:
-    """UI 缩放系数：配置优先，其次按显示器 scale factor 自动取。"""
+    """UI 缩放系数：配置优先，否则按物理 DPI 自动判定。
+
+    **不能用 Gdk.Monitor.get_scale_factor()**：入口为了让坐标链固定在设备像素
+    上会设 ``GDK_SCALE=1``，此时 GDK 会把显示器报成「2880 逻辑宽、scale 1」，
+    于是任何基于 GDK 缩放的判断都会把 HiDPI 屏误判成普通屏（实测就是这个原因
+    让工具栏又变小了）。
+
+    改用物理尺寸算 DPI —— 显示器有多少毫米是硬件事实，与 GDK 缩放无关。
+    这也是 Flameshot 判断 HiDPI 的做法。环境变量 ``SNAP_UI_SCALE`` 可覆盖。
+    """
+    env = os.environ.get("SNAP_UI_SCALE", "").strip()
+    if env:
+        try:
+            val = float(env)
+            if 0.5 <= val <= 3.0:
+                return val
+        except ValueError:
+            pass
+
     raw = str(cfg.get("ui_scale", "auto") or "auto").strip().lower()
     if raw not in ("auto", ""):
         try:
@@ -417,30 +464,36 @@ def _detect_ui_scale(cfg: dict) -> float:
                 return val
         except ValueError:
             pass
-    try:
-        from gi.repository import Gdk
 
-        disp = Gdk.Display.get_default()
-        if disp is None:
+    try:
+        from . import capture_linux as capture
+
+        width_px, _height_px = capture.root_geometry()
+        width_mm, _height_mm = _physical_size_mm()
+        if width_px <= 0 or width_mm <= 0:
             return 1.0
-        n = disp.get_n_monitors()
-        factor = max((disp.get_monitor(i).get_scale_factor() for i in range(n)), default=1)
-        # 覆盖层按物理像素绘制，在 HiDPI 面板上 UI 必须跟着放大才看得清：
-        # 12px 的字在 2880 宽的屏上等于 1080p 屏的 8px。取 2.0 让标签/提示
-        # 恢复到 1080p 屏上 12~16px 的观感。
-        return 2.0 if factor >= 2 else 1.0
+        dpi = width_px / (width_mm / 25.4)
+        # 96dpi 是「1 个 CSS 像素 = 1 个物理像素」的基准
+        ratio = dpi / 96.0
+        if ratio >= 1.75:
+            return 2.0
+        if ratio >= 1.25:
+            return 1.5
+        return 1.0
     except Exception:  # noqa: BLE001
         return 1.0
 
 
 def _make_resize_cursors() -> dict:
-    """8 个方位的手柄光标；拿不到就留空（不影响功能）。"""
+    """8 个方位的手柄光标；拿不到就返回空字典（不影响功能）。"""
     names = {"nw": "nw-resize", "n": "n-resize", "ne": "ne-resize", "e": "e-resize",
              "se": "se-resize", "s": "s-resize", "sw": "sw-resize", "w": "w-resize"}
     out: dict = {}
     try:
         disp = Gdk.Display.get_default()
     except Exception:  # noqa: BLE001
+        return out
+    if disp is None:
         return out
     for key, name in names.items():
         try:
@@ -1268,8 +1321,12 @@ class ShotOverlay:
 
     # ------------------------------------------------------------ 工具栏
 
-    def _layout_toolbar(self, dw, dh) -> None:
-        """计算工具栏按钮位置（逻辑坐标）。结果缓存在 self._buttons。"""
+    def _layout_toolbar(self) -> None:
+        """计算工具栏位置与每个按钮的矩形，**统一使用画布坐标**。
+
+        绘制时整体乘 ``ui_scale`` 放大（``_draw_toolbar``），命中测试反过来除
+        （``_button_at``）。两套坐标不再混用。
+        """
         bs = 30           # 按钮边长
         gap = 2
         pad = 6
@@ -1316,17 +1373,49 @@ class ShotOverlay:
             + 10 * (len(groups) - 1)
         bar_h = pad * 2 + row_h - gap
 
-        sel = self.sel or (0, 0, 0, 0)
-        x0, y0, x1, y1 = sel
-        dx0, dy0 = self._to_disp(x0, y0)
-        dx1, dy1 = self._to_disp(x1, y1)
-        bx = dx0 + (dx1 - dx0 - total_w) / 2.0
-        by = dy1 + 10
-        if by + bar_h > dh:
-            by = dy0 - bar_h - 10
-        if by < 0:
-            by = max(0.0, min(dy1 + 10, dh - bar_h))
-        bx = max(8.0, min(bx, max(8.0, dw - total_w - 8)))
+        # ---- 定位：全部用画布坐标（= X11 根像素）----
+        # 早期这里混用了两套单位：dw/dh 是「UI 单位下的窗口尺寸」，而 _to_disp
+        # 返回画布坐标，两者直接比较 —— ui_scale=2 时就会拿画布 1300 和 UI 上限
+        # 900 比大小，工具栏被丢到屏幕外（真机实测 y=3196，画布高只有 1800）。
+        W, H = float(self.cr_w), float(self.cr_h)
+        if self.sel is None:
+            cx0 = cy0 = cx1 = cy1 = 0.0
+        else:
+            cx0, cy0 = self._to_disp(self.sel[0], self.sel[1])
+            cx1, cy1 = self._to_disp(self.sel[2], self.sel[3])
+
+        # 屏幕上真正占多大：布局尺寸是「设计尺寸」，绘制时整体乘 ui_scale。
+        # 注意：绘制阶段是「先画再缩放」，所以缩放同样放大了位置。要让最终
+        # 屏幕矩形落在可视区内，得先按放大后的尺寸钳制，再反推回设计坐标：
+        #     屏幕矩形 = (bx*us, by*us, total_w*us, bar_h*us)
+        #     要求 屏幕上 bx*us + total_w*us <= W
+        # 早期忽略了这一点：按 922 宽摆好位置再放大成 1844 画出去，工具栏跑到
+        # 屏幕外（实测 x 2056..3900，屏幕只有 2880 宽），用户感觉就是
+        # 「窄截图时两端的功能点不到、点了反而重新框选」。
+        us = self.ui_scale
+        vis_w = total_w * us
+        vis_h = bar_h * us
+        margin = 8.0
+
+        # 水平：与选区左缘对齐（窄选区时工具栏比选区宽得多，居中会把两端顶出
+        # 屏幕），再把最终矩形压回可视范围
+        vx = cx0 * us
+        if vx + vis_w > W - margin:
+            vx = W - margin - vis_w
+        if vx < margin:
+            vx = margin
+        bx = vx / us
+
+        # 竖直：优先选区下方，放不下就上方；都放不下时贴下边缘
+        # （此时必然与选区重叠，但至少完整可见、点得到）
+        vy = (cy1 + 10) * us
+        if vy + vis_h > H:
+            vy = (cy0 - 10) * us - vis_h
+        # 选区又高又贴边时（比如整屏选中、或贴着屏幕底部），上方也放不下，
+        # 此时只能让它压在选区上 —— 但必须保证「整条可见可点」，否则又变成
+        # 「按钮点不到」。所以最后统一夹进可视区间。
+        vy = min(max(vy, margin), max(margin, H - vis_h - margin))
+        by = vy / us
 
         self._tb_pos = (bx, by, total_w, bar_h)
         x = bx + pad
@@ -1340,22 +1429,14 @@ class ShotOverlay:
         self._buttons = [b for g in groups for b in g]
 
     def _draw_toolbar(self, cr, dw, dh) -> None:
-        """工具栏；够大时整条缓存成一张 surface，悬停 / 拖动只换位置贴图。"""
-        self._layout_toolbar(dw, dh)
+        """画工具栏。位置与按钮都是画布坐标，这里整体按 ui_scale 放大绘制。"""
+        self._layout_toolbar()
         bx, by, bw, bh = self._tb_pos
-        if bw * bh <= 40000:          # 小条直接画，避免把「自适应缩放」烘进缓存
-            self._paint_toolbar(cr, bx, by, bw, bh)
-            return
-        hover = self._hover
-        key = (round(bx), round(by), bw, bh, self.tool, self.color,
-               hover.kind if hover else "", hover.data if hover else "")
-        if self._tb_surf is None or self._tb_key != key:
-            self._tb_surf = self._build_toolbar_surface(bx, by, bw, bh)
-            self._tb_key = key
         cr.save()
-        cr.set_source_surface(self._tb_surf, 0, 0)
-        cr.paint()
+        cr.scale(self.ui_scale, self.ui_scale)
+        self._paint_toolbar(cr, bx, by, bw, bh)
         cr.restore()
+        del dw, dh
 
     def _paint_toolbar(self, cr, bx, by, bw, bh) -> None:
         """把工具栏画到当前上下文（坐标单位为 UI 单位）。"""

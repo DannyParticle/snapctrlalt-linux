@@ -403,6 +403,21 @@ class App:
                 pass
             self.overlay = None
         try:
+            from .overlay import _detect_ui_scale
+            _raw = (self.cfg or {}).get("ui_scale", "<缺键>")
+            try:
+                from gi.repository import Gdk as _G
+                from . import capture_linux as _cap
+                _rw, _rh = _cap.root_geometry()
+                _d = _G.Display.get_default()
+                _mons = [( _d.get_monitor(i).get_geometry().width,
+                           _d.get_monitor(i).get_scale_factor())
+                         for i in range(_d.get_n_monitors())] if _d else None
+                print(f"ui_scale 调试: 配置={_raw!r} 结果={_detect_ui_scale(self.cfg or {})} "
+                      f"root={_rw}x{_rh} 显示器(逻辑宽,scale)={_mons} "
+                      f"GDK_SCALE={os.environ.get('GDK_SCALE')}", flush=True)
+            except Exception as _e:
+                print(f"ui_scale 调试失败: {_e}", flush=True)
             self.overlay = ShotOverlay(
                 app=self, screen_img=img, screen_box=boxes.box,
                 on_close=self._on_overlay_close, status_cb=self._status,
@@ -986,6 +1001,15 @@ class App:
             self.show_settings()
         elif cmd == "quit":
             self.quit()
+        elif cmd == "dbgtb":
+            o = self.overlay
+            if o is not None:
+                print("dbgtb 画布=%sx%s ui_scale=%s 选区=%s 工具栏(UI)=%s "
+                      "工具栏(画布)=%s 分配=%sx%s" % (
+                          o.cr_w, o.cr_h, o.ui_scale, o.sel, o._tb_pos,
+                          tuple(round(v * o.ui_scale, 1) for v in o._tb_pos) if o._tb_pos else None,
+                          o.area.get_allocated_width(), o.area.get_allocated_height()),
+                      flush=True)
         return False
 
     def quit(self) -> None:

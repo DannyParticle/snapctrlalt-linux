@@ -1,3 +1,26 @@
+snapctrlalt (1.2.6) unstable; urgency=medium
+
+  * Fixed the annotation toolbar running off the screen for narrow or tall
+    selections, which made its leftmost and rightmost buttons unreachable and
+    turned clicks near them into a fresh selection.  Two causes:
+    the layout mixed two coordinate systems (it placed buttons using canvas
+    coordinates but clamped them against UI-unit bounds), and it clamped the
+    unscaled size while drawing scales the whole bar by ui_scale -- so a bar
+    laid out 922 px wide was drawn 1844 px wide and ended up outside the
+    screen.  Placement and clamping now work on the final on-screen rectangle.
+  * The vertical placement is clamped into the visible area in every case;
+    previously a selection glued to the bottom edge pushed the bar off screen.
+  * UI scale detection no longer asks GDK: with GDK_SCALE=1 (which the launcher
+    sets so that the coordinate chain stays in device pixels) GDK reports a
+    scale factor of 1 for every monitor, so HiDPI screens were misdetected and
+    the interface shrank.  It now derives the scale from the panel's physical
+    size in millimetres (RandR), the same signal Flameshot uses; SNAP_UI_SCALE
+    overrides it.
+  * Added a construction smoke test and a toolbar reachability test covering
+    nine selection shapes; the latter found the bottom-edge case.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Sun, 27 Sep 2026 03:30:00 +0800
+
 snapctrlalt (1.2.5) unstable; urgency=medium
 
   * The selection handles now work under every annotation tool, and take

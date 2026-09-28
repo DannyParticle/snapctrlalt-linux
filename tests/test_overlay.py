@@ -122,7 +122,7 @@ def test_selection_flow(app: FakeApp) -> None:
     o._on_release(o.win, _FakeEvent(x=400, y=300, button=1))
     check("松开后进入标注态", o.mode == "draw", f"sel={o.sel}")
     check("选区尺寸正确", o.sel == (100.0, 100.0, 400.0, 300.0), str(o.sel))
-    o._layout_toolbar(o.disp_w, o.disp_h)
+    o._layout_toolbar()
     check("工具栏已排布", len(o._buttons) > 10, f"{len(o._buttons)} 个按钮")
     check("工具自动切到矩形", o.tool == ov.T_RECT, str(o.tool))
 
@@ -380,7 +380,7 @@ def test_toolbar_click_does_not_reset_selection(app: FakeApp) -> None:
     o.ui_scale = 2.0
     o.sel = (100.0, 100.0, 700.0, 500.0)
     o.mode = "draw"
-    o._layout_toolbar(o.cr_w, o.cr_h)
+    o._layout_toolbar()
     check("工具栏已排布", o._tb_pos is not None, str(o._tb_pos))
 
     xs = sorted((b.x, b.x + b.w) for b in o._buttons)
@@ -399,7 +399,7 @@ def test_toolbar_click_does_not_reset_selection(app: FakeApp) -> None:
     # 真实按钮依然生效
     o.sel = (100.0, 100.0, 700.0, 500.0)
     o.mode = "draw"
-    o._layout_toolbar(o.cr_w, o.cr_h)
+    o._layout_toolbar()
     b = o._buttons[0]
     o._on_press(o.win, _FakeEvent(
         x=int((b.x + b.w / 2) * o.ui_scale),
@@ -449,12 +449,85 @@ def test_handles_work_with_any_tool(app: FakeApp) -> None:
 
     # 四角与四边都要能命中
     o._set_tool(ov.T_RECT)
-    o._layout_toolbar(o.cr_w, o.cr_h)
+    o._layout_toolbar()
     corners = {"nw": (200.0, 150.0), "ne": (900.0, 150.0),
                "sw": (200.0, 650.0), "se": (900.0, 650.0)}
     for name, (hx, hy) in corners.items():
         check(f"{name} 角手柄可命中", o._handle_at(hx, hy) == name,
               str(o._handle_at(hx, hy)))
+    o.win.destroy()
+
+
+def test_toolbar_reachable_for_any_selection(app: FakeApp) -> None:
+    """无论选区什么形状，工具栏都必须完整落在屏幕内、每个按钮都点得到。
+
+    用户报的「窄截图时最左/最右功能点不到」就是这个不变量被破坏了：
+    布局按「设计尺寸」摆位置，绘制又整体乘 ui_scale，结果工具栏被放大后跑到
+    屏幕外（实测落在 x 2056..3900，而屏幕只有 2880 宽）。
+    """
+    print("\n[15] 工具栏对任意选区都完整可见可点")
+    W, H = 2880, 1800
+    shapes = [
+        ("窄 560×200", (1160, 700, 1720, 900)),
+        ("极窄 200×200", (1340, 700, 1540, 900)),
+        ("细长 280×900", (1200, 400, 1480, 1300)),
+        ("贴右边缘", (2700, 600, 2879, 900)),
+        ("贴左边缘", (2, 600, 560, 900)),
+        ("贴底边", (1100, 1650, 1780, 1798)),
+        ("贴顶边", (1100, 2, 1780, 300)),
+        ("常规 1400×300", (740, 700, 2140, 1000)),
+        ("整屏", (0, 0, W, H)),
+    ]
+    from snapctrlalt.geometry import Geometry  # noqa: PLC0415
+
+    for name, sel in shapes:
+        img = make_screen(W // 8, H // 8, 1)
+        geo = Geometry(img_w=W, img_h=H, root_w=W, root_h=H, win_w=W, win_h=H)
+        o = TestOverlay(app, img, (0, 0, W, H), on_close=lambda r: None, geo=geo)
+        o.sel = tuple(float(v) for v in sel)
+        o.mode = "draw"
+        o.tool = ov.T_RECT
+        o._layout_toolbar()
+        bx, by, bw, bh = o._tb_pos
+        us = o.ui_scale
+        # 绘制阶段的最终屏幕矩形：先画再缩放，所以位置和尺寸都被放大
+        sx0, sy0 = bx * us, by * us
+        sx1, sy1 = (bx + bw) * us, (by + bh) * us
+        inside = sx0 >= 0 and sy0 >= 0 and sx1 <= W and sy1 <= H
+        check(f"{name}：工具栏完整在屏幕内", inside,
+              f"屏幕矩形 {sx0:.0f},{sy0:.0f}..{sx1:.0f},{sy1:.0f}（屏幕 {W}×{H}）")
+        missed = [b.kind for b in o._buttons
+                  if o._button_at((b.x + b.w / 2) * us, (b.y + b.h / 2) * us) is not b]
+        check(f"{name}：{len(o._buttons)} 个按钮全部可点", not missed, str(missed[:4]))
+        o.win.destroy()
+
+
+def test_construction_smoke(app: FakeApp) -> None:
+    """覆盖层必须能真的构造出来（真窗口，非离屏）。
+
+    这条是补课：一次重构误删了 _make_resize_cursors，单元测试全绿但程序里
+    覆盖层直接起不来（NameError）。这里用真窗口构造一次，专门盯住
+    「构造函数里引用的每个符号都存在」。
+    """
+    print("\n[14] 构造冒烟：真窗口构造覆盖层")
+    import gi as _gi
+
+    _gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk as _Gtk
+
+    img = make_screen(320, 200, 1)
+    try:
+        o = ov.ShotOverlay(app, img, (0, 0, 320, 200),
+                           on_close=lambda r: None, scale=1)
+    except Exception as e:  # noqa: BLE001
+        check("覆盖层可构造", False, f"{type(e).__name__}: {e}")
+        return
+    check("覆盖层可构造", True, f"ui_scale={o.ui_scale}")
+    check("缩放手柄光标已就绪", bool(o._resize_cursors),
+          f"{len(o._resize_cursors)} 个方位")
+    check("UI 缩放系数是正数", o.ui_scale > 0, str(o.ui_scale))
+    for attr in ("_tb_pos", "_buttons", "geo", "cr_w", "cr_h"):
+        check(f"属性 {attr} 存在", hasattr(o, attr))
     o.win.destroy()
 
 
@@ -505,7 +578,9 @@ def main() -> int:
                test_undo_redo_clear, test_text_entry_flow, test_clip_inside_selection,
                test_scroll_width_and_tools, test_handles_and_move,
                test_persist_and_finish, test_pin, test_toolbar_click_does_not_reset_selection,
-               test_handles_work_with_any_tool, test_cancel):
+               test_handles_work_with_any_tool, test_toolbar_reachable_for_any_selection,
+               test_construction_smoke,
+               test_cancel):
         try:
             fn(app)
         except Exception:  # noqa: BLE001
