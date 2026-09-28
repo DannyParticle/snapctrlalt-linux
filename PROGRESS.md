@@ -18,7 +18,7 @@
 | 回归 / 坐标专项 / 端到端测试 | ✅ 54 + 36 + 28 全通过 |
 | 设置窗口（曾因 Gtk API 误用崩溃） | ✅ 已修，真实打开验证通过 |
 
-产物：`dist/snapctrlalt_1.2.3_all.deb`（88K，installed 432 KiB，sha256 见构建输出）
+产物：`dist/snapctrlalt_1.3.0_all.deb`（88K，installed 432 KiB，sha256 见构建输出）
 
 1.2.1 追加：多显示器负原点的钳制修正、启动器软链健壮性、debhelper 缺失时的
 明确提示、坐标测试扩到 36 项（负原点 + 分数缩放全屏扫描）。

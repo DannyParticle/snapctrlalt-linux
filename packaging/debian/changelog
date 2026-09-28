@@ -1,4 +1,4 @@
-snapctrlalt (1.2.6) unstable; urgency=medium
+snapctrlalt (1.3.0) unstable; urgency=medium
 
   * Fixed the annotation toolbar running off the screen for narrow or tall
     selections, which made its leftmost and rightmost buttons unreachable and
@@ -20,6 +20,12 @@ snapctrlalt (1.2.6) unstable; urgency=medium
     nine selection shapes; the latter found the bottom-edge case.
 
  -- dsh (deepseek harness) <dsh@localhost>  Sun, 27 Sep 2026 03:30:00 +0800
+
+snapctrlalt (1.2.5~alpha) unstable; urgency=medium
+
+  * 以下 1.0.0 – 1.2.5 属内部 alpha 阶段（自用开发），1.3.0 起为第一个 beta。
+
+ -- dsh (deepseek harness) <dsh@localhost>  Sun, 27 Sep 2026 04:00:00 +0800
 
 snapctrlalt (1.2.5) unstable; urgency=medium
 

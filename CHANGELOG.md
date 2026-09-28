@@ -1,9 +1,21 @@
 # 更新日志
 
-作者：参考 Windows 版 SnapCtrlAlt（作者 mimo、DeepSeek Harness 与 DannyParticle）。
-许可：MIT。版本号与上游保持一致，便于对照功能。
+许可：MIT。交互与功能设计来自 Windows 版 [SnapCtrlAlt](https://gitee.com/DannyParticle/SnapCtrlAlt)
+（作者 mimo、DeepSeek Harness 与 DannyParticle）；本仓库是其 Linux 移植。
 
-## 1.2.6 — 工具栏不再跑出屏幕（窄/细长选区）
+## 版本说明
+
+- `1.0.0` – `1.2.5`：**alpha**，自用开发阶段，接口与行为都在变。
+- `1.3.0` 起：**beta**，第一个对外发布的版本，功能集冻结到这个范围，
+  后续以修 bug 与打磨为主。
+
+## 1.3.0 (beta 1) — 第一个对外版本
+
+相对 alpha 阶段（1.0.0–1.2.5）的累积变更：完整的框选/标注工作流、托盘常驻、
+全局热键、贴图、可复现的 Debian 包，以及一轮围绕 HiDPI 坐标与工具栏可达性的
+集中修复。具体条目见下方 1.2.6 及其之前的记录。
+
+### 1.2.6 — 工具栏不再跑出屏幕（窄/细长选区）
 
 用户报「窄截图时最左和最右的功能点不到、点了反而重新选择区域」。查出两个原因：
 

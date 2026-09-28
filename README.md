@@ -3,6 +3,8 @@
 Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴板。交互对标 QQ 截图，
 界面用 GTK3 + Cairo，抓图走 X11（Xlib / GDK），除系统自带的 Python 库外不需要编译任何东西。
 
+> 状态：**beta**（1.3.0 是第一个对外版本；1.0.0–1.2.5 为内部 alpha）。
+>
 > 这是 Windows 项目 [SnapCtrlAlt](https://gitee.com/DannyParticle/SnapCtrlAlt) 的 Linux 版移植，
 > 保留了它的全部交互设计（工具集、工具栏、快捷键、放大镜、贴图、托盘分流逻辑），
 > 渲染层从 Tk 画布 + Pillow 换成 Cairo 直接绘制。
@@ -63,7 +65,7 @@ Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴
 
 ```bash
 ./packaging/build-deb.sh                 # 产物在 dist/snapctrlalt_<版本>_all.deb
-sudo apt install ./dist/snapctrlalt_1.2.2_all.deb
+sudo apt install ./dist/snapctrlalt_1.3.0_all.deb
 ```
 
 装完在应用菜单里搜「截图工具」，或直接敲 `snapctrlalt`。
@@ -73,7 +75,7 @@ sudo apt install ./dist/snapctrlalt_1.2.2_all.deb
 **免安装（源码目录直接跑）**
 
 ```bash
-git clone <本仓库> && cd snapctrlalt-linux
+git clone https://github.com/DannyParticle/snapctrlalt-linux.git && cd snapctrlalt-linux
 ./snapctrlalt.sh            # 托盘常驻
 ```
 

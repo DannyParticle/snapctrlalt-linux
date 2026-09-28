@@ -1,9 +1,11 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: SnapCtrlAlt
-Source: https://gitee.com/DannyParticle/SnapCtrlAlt
+Source: https://github.com/DannyParticle/snapctrlalt-linux
+Upstream: https://gitee.com/DannyParticle/SnapCtrlAlt (Windows original)
 
 Files: *
-Copyright: 2026 mimo, DeepSeek Harness and DannyParticle
+Copyright: 2026 dsh (deepseek harness)
+           2026 mimo, DeepSeek Harness and DannyParticle (upstream design)
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
