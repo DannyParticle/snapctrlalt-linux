@@ -1,3 +1,14 @@
+snapctrlalt (1.4.1) unstable; urgency=medium
+
+  * Fixed the corner buttons of the toolbar being only 24px tall in the
+    vertical layouts (left/right), which made switching sides feel broken.
+    Their size is now derived from the bar length in its final orientation
+    (66px horizontal, 75px vertical at ui_scale 2) and the same value is used
+    both for reserving space and for building the buttons.
+  * The corner buttons no longer stick out of the bar when it is vertical.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 09:05:00 +0800
+
 snapctrlalt (1.4.0) unstable; urgency=medium
 
   * The toolbar can now be attached to any of the four sides: the small

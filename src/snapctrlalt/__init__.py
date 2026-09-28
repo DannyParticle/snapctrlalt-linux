@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 __app_name__ = "SnapCtrlAlt"
 
 __all__ = ["__version__", "__app_name__"]

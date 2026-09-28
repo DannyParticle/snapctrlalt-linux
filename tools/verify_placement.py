@@ -61,10 +61,10 @@ def tail() -> str:
         size = fh.tell()
         fh.seek(max(0, size - 65536))
         text = fh.read().decode("utf-8", "replace")
-    # 尾部截断可能从半行开始，也可能切在多字节字符中间（中文日志！）：
-    # 丢掉第一行，避免把半行当成完整记录解析（"四角"少一个方向就是这么来的）。
-    lines = text.splitlines()
-    return "\n".join(lines[1:] if len(lines) > 1 else lines)
+    # **不要**丢掉第一行：TBGEO 常常正好是窗口里的第一行，丢掉它就会出现
+    # "四角少一个方向"（top 被吃掉）这种离谱现象。半行由解析端容忍即可：
+    # 解析失败的 token 本来就匹配不上，不会污染结果。
+    return text
 
 
 def parse(line: str):
@@ -79,28 +79,37 @@ def parse(line: str):
             place = tok.split("=", 1)[1]
         elif tok.startswith("竖排="):
             vertical = tok.split("=", 1)[1] == "1"
-        elif ":" in tok and "," in tok and "=" not in tok:
+        elif ":" in tok and "," in tok and tok.split(":", 1)[0].split("=")[-1].strip("[") in (
+                "top", "bottom", "left", "right"):
+            # 第一个角写成 "四角=[top:733,1493"，里面带 "="，早期被过滤条件排掉了 ——
+            # 表现就是"永远只剩三个角"，于是 top 方向永远走不到。
             name, xy = tok.split(":", 1)
+            name = name.split("=")[-1].strip("[")
             x, y = xy.rstrip("]").split(",")
             corners[name] = (float(x), float(y))
     return geo, place, vertical, corners
 
 
 def ask():
-    """发一次 dbgtb，等这一行变化后解析（拿到的必然是本次请求的结果）。"""
-    before = tail()
+    """发一次 dbgtb，累积读取直到拿到**四个角都在**的最新 TBGEO 行。
+
+    别只盯着"变化的那一块"：应用的一次输出可能被拆成几块写进日志，
+    TBGEO 落在先到的那块里，只看最新块就会漏掉（实测表现为"四角少一个"）。
+    """
     send("dbgtb")
     t0 = time.time()
+    acc = ""
     line = ""
-    while time.time() - t0 < 5:
+    while time.time() - t0 < 6:
         chunk = tail()
-        if chunk != before:
-            for ln in chunk.splitlines():
-                if "TBGEO" in ln and "工具栏=(" in ln:
-                    line = ln
-            if line:
-                break
-        time.sleep(0.2)
+        if chunk and not acc.endswith(chunk[-200:]):
+            acc = (acc + "\n" + chunk)[-200000:]
+        for ln in acc.splitlines():
+            if "TBGEO" in ln and "工具栏=(" in ln:
+                line = ln
+        if line and len(parse(line)[3]) >= 4:
+            break
+        time.sleep(0.25)
     return parse(line)
 
 
@@ -213,14 +222,17 @@ def main() -> int:
         on_screen = bx >= 0 and by >= 0 and bx + bw <= W and by + bh <= H
         # 重绘可能还没落到屏幕上（实测有一次抓到旧帧，比例 0.00）。
         # 比例太低就再等一拍重抓 —— 条底色比例 0 在几何上不可能。
+        # 换边那一拍屏幕可能还没重绘完：先等一拍再抓，必要时重抓两次。
+        # 判据以应用自报的矩形/朝向为主，这里的像素只用来确认"真的画出来了"。
+        time.sleep(0.6)
         ratio = 0.0
         img = None
-        for attempt in range(4):
+        for attempt in range(3):
             img = shot(f"/tmp/place_{step}_{place}.png")
             ratio = bar_color_ratio(img, (bx, by, bx + bw, by + bh))
             if ratio >= 0.5:
                 break
-            time.sleep(1.0)
+            time.sleep(1.2)
         del attempt
         print(f"\n[{step}] 摆放={place} 竖排={vertical} 工具栏 {bw:.0f}×{bh:.0f} "
               f"@({bx:.0f},{by:.0f})  条底色比例={ratio:.2f}")
@@ -245,6 +257,12 @@ def main() -> int:
                 nxt = cand
                 break
         if nxt is None:
+            # 这一条上没有"还没试过"的方向：先回到 auto 再继续（auto 上四个角都在）
+            if place != "auto" and "left" in corners:
+                print("  先切回 auto，再继续试别的方向")
+                click(*corners["left"])
+                time.sleep(1.0)
+                continue
             break
         cx, cy = corners[nxt]
         print(f"  点四角 → {nxt} @({cx:.0f},{cy:.0f})")

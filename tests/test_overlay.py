@@ -751,6 +751,16 @@ def test_toolbar_placements_and_drag(app: FakeApp) -> None:
         missed_c = [b.data for b in corners
                     if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
         check(f"{place}：四角按钮都可点", not missed_c, str(missed_c))
+        # 四角按钮必须**整块在条内**（早期竖排时它们探出条外，看着就是"切不过去"），
+        # 而且要有手指点得到的尺寸（不小于 15 设计像素 × ui_scale）
+        bx, by, bw, bh = o._tb_pos
+        outside = [c.data for c in corners
+                   if not (bx <= c.x and c.x + c.w <= bx + bw
+                           and by <= c.y and c.y + c.h <= by + bh)]
+        check(f"{place}：四角按钮都在条内", not outside, str(outside))
+        small = [c.data for c in corners if min(c.w, c.h) < 15 * o.ui_scale]
+        check(f"{place}：四角按钮够大", not small,
+              f"{[(c.data, round(c.w)) for c in corners]}")
         o.win.destroy()
 
     # 连续换边（left→right 都是竖排）：尺寸不能串（实测出现过 1204×152 却说是竖排）

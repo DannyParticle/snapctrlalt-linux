@@ -1382,12 +1382,17 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         # _tb_pos 报 1204×152 却说是竖排、内容摆到条外。
         if getattr(self, "_tb_vertical", False) != want_vertical:
             self._transpose_buttons()
-        # 横排尺寸：内容两端各留出四角按钮的位置（否则首尾按钮被压住点不到）
-        inset = self._corner_size(content_w, bar_h, us)
-        total_w = pad * 2 + 2 * inset + content_w
+        # 四角按钮的边长要按**最终朝向的条长**算：横排看整条宽、竖排看整条高。
+        # 早期竖排时拿"内容宽"（562）去算，得到 24px 的按钮 —— 屏幕上几乎点不到，
+        # 用户的感觉就是"切边切不过去"。
         if want_vertical:
-            # 竖排 = 把横排整体转置：宽高互换
-            total_w, bar_h = bar_h, total_w
+            base_len = pad * 2 + 2 * self._corner_size(content_w, bar_h, us) + content_w
+            inset = self._corner_size(base_len, bar_h, us)
+            total_w, bar_h = bar_h, base_len + 2 * inset
+        else:
+            inset = self._corner_size(content_w, bar_h, us)
+            total_w = pad * 2 + 2 * inset + content_w
+        self._tb_corner_side = inset
 
         # ---- 定位：全部用画布坐标（= X11 根像素）----
         # 早期混用了两套单位：dw/dh 是「UI 单位下的窗口尺寸」，而 _to_disp 返回
@@ -1648,13 +1653,12 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         return 2.0 * max(6.0 * us, bar_len * 0.028)
 
     @staticmethod
-    def _corner_rects(bx, by, bw, bh, us) -> list[tuple]:
+    def _corner_rects(bx, by, bw, bh, side: float) -> list[tuple]:
         """四个角上「换个边」按钮的矩形（画布坐标）。
 
         取 min(宽,高)*0.34 作半边长：贴边时那两个用不到的角落因此变成功能入口，
         而且不会压住主按钮（主按钮都排在条的另一侧）。
         """
-        side = ShotOverlay._corner_size(bw, bh, us)   # 边长
         return [
             ("top", bx, by, side, side, "把工具栏移到上边（横排）"),
             ("bottom", bx + bw - side, by + bh - side, side, side,
@@ -1664,14 +1668,21 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         ]
 
     def _sync_corner_buttons(self) -> None:
-        """按当前工具栏矩形重建四角按钮（拖动后也要跟着走）。"""
+        """按当前工具栏矩形重建四角按钮（拖动后也要跟着走）。
+
+        ``side`` 用布局里算好的那份（``_tb_corner_side``）—— 与"内容给它留出的
+        位置"必须是同一个数；两处各算一次就会出现"按钮比预留空间小一大截"，
+        竖排时表现为 24px 的小点，用户点不到就说"边切不过去"。
+        """
         if self._tb_pos is None:
             self._tb_corners = []
             return
         bx, by, bw, bh = self._tb_pos
+        side = float(getattr(self, "_tb_corner_side", 0.0)
+                     or self._corner_size(bw, bh, self.ui_scale))
         self._tb_corners = [
             _Button("place", x, y, w, h, tip, "place", which)
-            for which, x, y, w, h, tip in self._corner_rects(bx, by, bw, bh, self.ui_scale)
+            for which, x, y, w, h, tip in self._corner_rects(bx, by, bw, bh, side)
         ]
 
     def _paint_button(self, cr, b: _Button) -> None:
