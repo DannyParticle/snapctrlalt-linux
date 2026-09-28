@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import math
 
+from .settings import MODE_SWITCH_BUTTON  # noqa: E402
+
 import cairo
 import gi
 
@@ -116,7 +118,11 @@ def _row_specs():
              for k, w in (("width", WIDTHS[0]), ("width2", WIDTHS[1]),
                           ("width3", WIDTHS[2]))]
     row2.append("sep")
-    row2 += [("editor", "临时切到方案①（贴选区工具栏）· 只这一次，默认不变", "editor", None)]
+    # 「临时切换」按钮：已按 settings.MODE_SWITCH_BUTTON 收掉（见 overlay.py 说明）
+    from . import settings as _cfg
+    if getattr(_cfg, "MODE_SWITCH_BUTTON", False):
+        row2 += [("editor", "临时切到方案①（贴选区工具栏）· 只这一次，默认不变",
+                  "editor", None)]
     row2.append("sep")
     row2 += [("undo", "撤销 (Ctrl+Z)", "undo", None),
              ("redo", "重做 (Ctrl+Shift+Z)", "redo", None),

@@ -29,6 +29,7 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango, PangoCairo  # noqa: 
 
 from PIL import Image, ImageFilter  # noqa: E402
 
+from .settings import MODE_SWITCH_BUTTON  # noqa: E402
 from . import geometry  # noqa: E402
 from . import toolbar as tb_mod  # noqa: E402
 
@@ -1351,11 +1352,14 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
                       for k, w in (("width", WIDTHS[0]), ("width2", WIDTHS[1]),
                                    ("width3", WIDTHS[2]))]
         row2_spec.append("sep")
-        # 一键试另一个方案：点了用它临时切到方案③（只这一次，默认设置不变）。
-        # 用户明确要求这个入口要出现在**工具栏上**，而不是藏在设置窗口里。
-        row2_spec += [("editor", "临时切到方案③（编辑器窗口）· 只这一次，默认不变 (Ctrl+E)",
-                       "editor", None)]
-        row2_spec.append("sep")
+        # 「临时切换」按钮：已按 settings.MODE_SWITCH_BUTTON 收掉（用户实测点不动）。
+        # 需要时按 **Ctrl+E**，或在设置 →「裁剪与工具栏」里切。
+        # 运行时读取（不是导入时绑定），这样测试/将来都能即时改回来。
+        from . import settings as _cfg
+        if getattr(_cfg, "MODE_SWITCH_BUTTON", False):
+            row2_spec += [("editor", "临时切到方案③（编辑器窗口）· 只这一次，默认不变 (Ctrl+E)",
+                           "editor", None)]
+            row2_spec.append("sep")
         row2_spec += [("undo", "撤销 (Ctrl+Z)", "undo", None),
                       ("redo", "重做 (Ctrl+Shift+Z)", "redo", None),
                       ("clear", "清空所有标注", "clear", None)]

@@ -13,6 +13,10 @@ import shutil
 import sys
 from pathlib import Path
 
+# 「临时切换」**按钮**开关：工具栏上那两个按钮先收掉（用户实测点不动），
+# 但 Ctrl+E 与设置里的入口保留。改回 True 即可让按钮重新出现。
+MODE_SWITCH_BUTTON = False
+
 APP_NAME = "SnapCtrlAlt"
 APP_ID = "snapctrlalt"
 DESKTOP_FILE = f"{APP_ID}.desktop"

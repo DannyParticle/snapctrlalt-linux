@@ -1,3 +1,14 @@
+snapctrlalt (1.5.1) unstable; urgency=medium
+
+  * The "switch layout" toolbar buttons are hidden again: clicking them did
+    not work reliably (user report).  Ctrl+E and the settings entry still
+    switch layouts, and the implementation (including carrying annotations
+    over) is kept behind settings.MODE_SWITCH_BUTTON for a later fix.
+  * Pre-release review: no debug prints left in src/, no stray files tracked,
+    and a full-history privacy scan is clean.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 16:20:00 +0800
+
 snapctrlalt (1.5.0) unstable; urgency=medium
 
   * Switching layouts temporarily (the toolbar button) now carries the

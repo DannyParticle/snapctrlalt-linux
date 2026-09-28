@@ -687,39 +687,45 @@ def test_reselect_switch(app: FakeApp) -> None:
 
 
 def test_toolbar_mode_switch_button(app: FakeApp) -> None:
-    """工具栏上要能一键试另一个方案（临时，不动默认设置）。
+    """临时切换：**工具栏按钮已收掉**，Ctrl+E 与设置里的入口保留。
 
-    用户原话：「临时切换应该指的是在方案一（或三）的工具栏显示」——所以两个
-    形态的工具栏里都必须有这个按钮，点了就切到另一个形态，且**只对本次生效**：
-    内存里的 _toolbar_mode_once 被消费，配置文件里的 toolbar_mode 不变。
+    用户实测工具栏上那个按钮点不动（"转换无法点击，算了吧"），所以按钮按
+    ``settings.MODE_SWITCH_BUTTON`` 收起来了；键盘与设置两条路照旧可用，
+    实现（含标注搬运）也留着 —— 把开关改回 True 按钮就回来。
     """
-    print("\n[23] 工具栏上的「临时切换方案」按钮")
+    print("\n[23] 临时切换：按钮已屏蔽，Ctrl+E / 设置入口保留")
+    import snapctrlalt.settings as cfgmod  # noqa: PLC0415
+
+    check("默认不显示工具栏按钮", cfgmod.MODE_SWITCH_BUTTON is False,
+          str(cfgmod.MODE_SWITCH_BUTTON))
+
     o = _overlay_for(app, (1160, 700, 1720, 900))
-    btn = [b for b in o._buttons if b.action == "editor"]
-    check("方案①工具栏有「临时切换」按钮", bool(btn), f"{len(o._buttons)} 个按钮")
-    if btn:
-        check("按钮提示写明只这一次", "只这一次" in btn[0].tip, btn[0].tip)
-        o._activate(btn[0])
-        check("点了会请求切换到方案③",
-              getattr(app, "switched", [])[-1:] == ["editor"],
-              str(getattr(app, "switched", [])))
+    btns = [b for b in o._buttons if b.action == "editor"]
+    check("方案①工具栏上没有「临时切换」按钮", not btns,
+          f"{len(o._buttons)} 个按钮：{[b.kind for b in btns]}")
+    # 按钮没了，但能力还在：直接调 _switch_mode 仍会请求切换（Ctrl+E 走这条路）
+    o._switch_mode("editor")
+    check("Ctrl+E 那条路仍可切换",
+          getattr(app, "switched", [])[-1:] == ["editor"],
+          str(getattr(app, "switched", [])))
+    check("切换时会把选区与标注一起带走",
+          getattr(app, "switch_payload", (None, []))[0] == o.sel,
+          str(getattr(app, "switch_payload", (None, []))[0]))
     o.win.destroy()
 
     import snapctrlalt.toolbar as tb_mod  # noqa: PLC0415
-    specs = tb_mod._row_specs()
-    actions = [item[2] for row in specs for item in row if item != "sep"]
-    check("方案③工具栏（共用同一套声明）也有该按钮", "editor" in actions, str(actions))
+    actions = [item[2] for row in tb_mod._row_specs() for item in row if item != "sep"]
+    check("方案③工具栏上也没有该按钮", "editor" not in actions, str(actions))
 
-    # 编辑器窗口点这个按钮 → 请求切回方案①
-    from PIL import Image as _I  # noqa: PLC0415
-
-    ed = tb_mod.EditorWindow(_I.new("RGB", (300, 200), (10, 20, 30)),
-                             on_commit=lambda *a: None, ui_scale=2.0, app=app)
-    ed._switch_mode("canvas")
-    check("方案③里点按钮会请求切换到方案①",
-          getattr(app, "switched", [])[-1:] == ["canvas"],
-          str(getattr(app, "switched", [])))
-    ed.win.destroy()
+    # 开关翻回 True：按钮应当回来（确认将来能一键恢复）
+    cfgmod.MODE_SWITCH_BUTTON = True
+    try:
+        o2 = _overlay_for(app, (1160, 700, 1720, 900))
+        back = [b for b in o2._buttons if b.action == "editor"]
+        check("开关改回 True 后按钮恢复", len(back) == 1, str(len(back)))
+        o2.win.destroy()
+    finally:
+        cfgmod.MODE_SWITCH_BUTTON = False
 
 
 def test_toolbar_placements_and_drag(app: FakeApp) -> None:
