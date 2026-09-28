@@ -1933,17 +1933,24 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             return
         self._palette_open = True
         self._palette_hover: tuple[int, int] | None = None
+        # 全部用**画布坐标**算（与 _tb_pos、cr_w/cr_h 同一套）。
+        # 早期这里把色块尺寸先乘了 ui_scale、又和已经是画布坐标的 _tb_pos 相加，
+        # 而绘制时又除以 ui_scale —— 结果尺寸和位置都被放大了一倍，钳制失效，
+        # 面板被画到屏幕左上角外面去。
         us = self.ui_scale
-        sw = self._PALETTE_SW * us
+        sw = self._PALETTE_SW * us          # 画布像素
         pad = 8 * us
         w = self._PALETTE_COLS * sw + pad * 2
         h = self._PALETTE_ROWS * sw + pad * 2 + 26 * us
-        # 放在工具栏下方；越界就回到屏幕内
         bx, by, _bw, bh = self._tb_pos or (0.0, 0.0, 0.0, 0.0)
+        margin = 8 * us
         px = bx
-        py = by + bh + 8 * us
-        px = min(max(px, 8.0), max(8.0, self.cr_w - w - 8.0))
-        py = min(max(py, 8.0), max(8.0, self.cr_h - h - 8.0))
+        py = by + bh + margin
+        # 下方放不下就放到工具栏上方；都放不下时贴住可视区
+        if py + h > self.cr_h - margin:
+            py = by - h - margin
+        px = min(max(px, margin), max(margin, self.cr_w - w - margin))
+        py = min(max(py, margin), max(margin, self.cr_h - h - margin))
         self._palette_rect = (px, py, w, h)
         self.status_cb("点击取色 · 再点一次色环可收起")
         self._redraw()

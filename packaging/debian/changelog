@@ -1,3 +1,14 @@
+snapctrlalt (1.3.10) unstable; urgency=medium
+
+  * Fixed the colour palette being drawn off screen.  Its size was scaled by
+    ui_scale and then added to the toolbar position, which is already in canvas
+    pixels, while the painter divided by ui_scale again -- so the panel's size
+    and position were doubled and the on-screen clamp stopped working.
+    Position and size are now computed in canvas pixels throughout, and the
+    panel falls back to above the toolbar when there is no room below.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 04:00:00 +0800
+
 snapctrlalt (1.3.9) unstable; urgency=medium
 
   * The overlay presentation now uses an in-canvas colour palette instead of a
