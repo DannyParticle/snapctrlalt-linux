@@ -804,10 +804,29 @@ class EditorWindow(AnnotationRenderer):
         self._hover: Button | None = None
         self._zoom = 1.0
 
+        # 工具栏尺寸**只由 UI 缩放决定**，与截图尺寸无关。
+        # 早期把宽度绑到了图宽上（avail = 图宽 - 8），于是截一张 936 宽的图时
+        # 工具栏被压到 scale 1.54，比覆盖层里的小一圈 —— 那是错的。
+        # 窗口比工具栏窄时由 ScrolledWindow 横向滚动，不缩工具栏。
+        self.ts = ToolbarState(ui_scale)
+
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self.win.set_title(f"{title} · {self.img_w}×{self.img_h}")
-        self.win.set_default_size(min(1200, self.img_w + 40),
-                                  min(900, self.img_h + 150))
+        # 默认宽度：至少放得下整条工具栏，再大也不超过屏幕的九成
+        need_w = int(self.ts.bar_w) + 40
+        screen_w = 1600
+        try:
+            from gi.repository import Gdk
+
+            disp = Gdk.Display.get_default()
+            if disp is not None:
+                mon = disp.get_primary_monitor() or disp.get_monitor(0)
+                if mon is not None:
+                    screen_w = mon.get_geometry().width
+        except Exception:  # noqa: BLE001
+            pass
+        win_w = min(max(need_w, min(self.img_w + 40, 1240)), int(screen_w * 0.92))
+        self.win.set_default_size(int(win_w), min(900, self.img_h + 170))
         self.win.set_position(Gtk.WindowPosition.CENTER)
         self.win.set_icon_name("camera-photo")
         self.win.connect("delete-event", lambda *_: (self.cancel(), True)[1])
@@ -817,16 +836,6 @@ class EditorWindow(AnnotationRenderer):
         self.win.add(outer)
 
         # ---- 顶部工具栏（真正的 GTK 控件，随窗口布局）----
-        # 按可用宽度自适应缩放：先按显示器 DPI 得到理想缩放，再按窗口宽度收窄，
-        # 这样在 1080p 屏上也能整条放得下（否则会被裁掉两端）。
-        # 目标宽度：不超过窗口默认宽度，也不超过图片宽度（两者都留一点边距）
-        avail = max(240.0, min(1240.0, float(self.img_w)) - 8.0)
-        base = ToolbarState(ui_scale)
-        fit = min(1.0, avail / max(1.0, base.bar_w))
-        self.ts = ToolbarState(ui_scale) if fit >= 0.999 else ToolbarState(ui_scale * fit)
-        # 收窄后仍复核一次：宁可再小一点，也不能比可用宽度宽
-        while self.ts.bar_w > avail and self.ts.ui_scale > 0.4:
-            self.ts = ToolbarState(self.ts.ui_scale * 0.96)
         self.toolbar_area = Gtk.DrawingArea()
         self.toolbar_area.set_size_request(int(self.ts.bar_w), int(self.ts.bar_h))
         self.toolbar_area.add_events(

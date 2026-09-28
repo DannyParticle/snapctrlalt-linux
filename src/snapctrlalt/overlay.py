@@ -537,9 +537,15 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         # clip / 缩放问题，但需要自己处理焦点（窗口设成不接受焦点）。
         _cfg = getattr(app, "cfg", {}) or {}
         self._tb_mode = str(_cfg.get("toolbar_mode", "canvas") or "canvas").lower()
-        if _cfg.get("separate_toolbar"):
-            self._tb_mode = "mask"          # 兼容旧键：等价于「独立置顶小窗」
-        self._use_sep_toolbar = self._tb_mode in ("mask", "window")
+        # 「浮在遮罩上的独立窗口」这个形态**不可用**：实测独立窗口压在活动中的
+        # 全屏覆盖层之上时既不会被绘制、也收不到鼠标点击（窗口管理器不允许后台
+        # 程序把自己的窗口提到活动窗口之上）。所以直接拒绝，回退到画布形态，
+        # 而不是留一条看起来能选、实际不工作的路径。
+        if self._tb_mode in ("mask", "window", "float") or _cfg.get("separate_toolbar"):
+            print("[overlay] toolbar_mode=mask 已停用（独立窗口压在覆盖层上不可用），"
+                  "改用 canvas", flush=True)
+            self._tb_mode = "canvas"
+        self._use_sep_toolbar = False
         self._tb_window = None
         # 画布坐标系 = X11 根像素（与 GTK 事件坐标同源，绘制 1:1 不重采样）
         self.cr_w = max(1, int(self.geo.root_w))
@@ -579,11 +585,6 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self._tb_key: tuple | None = None
         # 工具栏位置要在这里就给初值：首次绘制之前若发生点击，_on_press 会读它
         self._tb_pos: tuple[float, float, float, float] | None = None
-        # 手动摆放时的偏移（相对自动位置的左上角）。None = 自动跟随选区。
-        # 拖工具栏空白处即可摆放 —— 这是「浮在遮罩上」这条需求的可用实现：
-        # 独立窗口压在覆盖层上会被盖住（实测收不到点击也不显示），而画在覆盖层
-        # 自己身上的工具栏天然不会被盖，还能拖到遮罩区任意位置。
-        self._tb_offset: tuple[float, float] | None = None
         self._frames = 0
         self._frame_ms = 0.0
         self._ptr_checked_at = 0.0
@@ -647,11 +648,6 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self.win.connect("destroy", self._on_destroy)
         self.win.connect("realize", self._on_realize)
         self.win.connect("focus-out-event", self._on_focus_out)
-        # 手势绑在 DrawingArea 上（绑在 Gtk.Window 上实测不会触发）
-        self._tb_gesture = Gtk.GestureDrag.new(self.area)
-        self._tb_gesture.set_button(1)
-        self._tb_gesture.connect("drag-begin", self._on_tb_drag_begin)
-        self._tb_gesture.connect("drag-update", self._on_tb_drag_update)
 
         x, y, w, h = self.box
         # 窗口几何用 GTK 逻辑坐标（会再被 GDK scale factor 放大到物理像素）；
@@ -1201,7 +1197,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
     # ---------------------------------------------------- 独立工具栏窗口
 
     def _ensure_tb_window(self) -> None:
-        """按需创建独立工具栏窗口，并把选区变化同步过去。"""
+        """独立工具栏窗口这条路径已停用（见 __init__ 里的说明），保留空实现。"""
         if not self._use_sep_toolbar or self._closed:
             return
         if self._tb_window is None:
@@ -1220,29 +1216,6 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             self._tb_window.show(parent=self.win)
         else:
             self._tb_window.hide()
-
-    def _on_tb_drag_begin(self, _g, x, y) -> None:
-        """工具栏空白处开始拖动 → 准备摆放（命中按钮的按下不会走到这里）。"""
-        if (self._tb_window is not None or self.sel is None
-                or self.mode != "draw" or self._tb_pos is None):
-            return
-        tbx, tby, tbw, tbh = self._tb_pos
-        if not (tbx <= x <= tbx + tbw and tby <= y <= tby + tbh):
-            return
-        self._tb_drag_last = (x, y)
-        if self._tb_offset is None:
-            self._tb_offset = (0.0, 0.0)
-
-    def _on_tb_drag_update(self, _g, dx, dy) -> None:
-        if self._tb_offset is None or not hasattr(self, "_tb_drag_last"):
-            return
-        lx, ly = self._tb_drag_last
-        nx, ny = lx + dx, ly + dy
-        self._tb_offset = (self._tb_offset[0] + (nx - lx),
-                           self._tb_offset[1] + (ny - ly))
-        self._tb_drag_last = (nx, ny)
-        self._layout_toolbar()
-        self._redraw()
 
     def _status_tip(self, tip: str) -> None:
         if tip:
@@ -1364,12 +1337,6 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         # 选区上 —— 但必须整条可见可点，所以最后统一夹进可视区间。
         by = min(max(by, margin), max(margin, H - bar_h - margin))
 
-        # 手动摆放过就按偏移走（用户拖到哪儿就放哪儿），仍然保证整条可见
-        if self._tb_offset is not None:
-            bx = bx + self._tb_offset[0]
-            by = by + self._tb_offset[1]
-            bx = min(max(bx, margin), max(margin, W - total_w - margin))
-            by = min(max(by, margin), max(margin, H - bar_h - margin))
 
         self._tb_pos = (bx, by, total_w, bar_h)
         self._tb_rows = len(rows)

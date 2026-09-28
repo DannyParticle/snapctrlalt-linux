@@ -1,3 +1,19 @@
+snapctrlalt (1.3.4) unstable; urgency=medium
+
+  * The toolbar in the editor window was smaller than the one in the overlay:
+    its width was tied to the capture width, so a 936 px capture squeezed the
+    UI scale down to 1.54.  The toolbar size now depends only on the UI scale
+    (1204x152 for every capture size); a narrow window scrolls it instead of
+    shrinking it.
+  * Removed the draggable-toolbar experiment added in 1.3.3.  It was my own
+    stand-in for the "toolbar on the mask" request, was not asked for, and
+    changed the default behaviour; the toolbar follows the selection again.
+  * toolbar_mode: mask (a separate window floating over the mask) is now
+    disabled outright and falls back to canvas with a log line, instead of
+    staying selectable while not working.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Mon, 28 Sep 2026 22:00:00 +0800
+
 snapctrlalt (1.3.3) unstable; urgency=medium
 
   * Fixed the editor window showing an empty canvas: the canvas draw handler

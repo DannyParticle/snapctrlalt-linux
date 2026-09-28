@@ -603,18 +603,25 @@ def test_editor_window(app: FakeApp) -> None:
     ed.commit("copy")
     check("提交回传了结果与动作", got == [((320, 240), "copy")], str(got))
 
-    # 工具栏比窗口宽时要能自适应收窄（否则两端会被裁掉）
-    narrow = tb_mod.EditorWindow(make_screen(400, 300, 1),
-                                 on_commit=lambda i, a: None,
-                                 ui_scale=2.0, icon_painter=draw_icon)
-    check("窄图时工具栏自适应收窄", narrow.ts.bar_w <= 400,
-          f"工具栏 {narrow.ts.bar_w:.0f} vs 图宽 400")
-    narrow.destroy()
+    # 工具栏尺寸只由 UI 缩放决定，与截图尺寸无关（截小图时工具栏不该变小）
+    sizes = []
+    for w in (320, 800, 1600):
+        ed2 = tb_mod.EditorWindow(make_screen(w, 300, 1),
+                                  on_commit=lambda i, a: None,
+                                  ui_scale=2.0, icon_painter=draw_icon)
+        sizes.append((round(ed2.ts.bar_w), round(ed2.ts.bar_h)))
+        ed2.destroy()
+    check("工具栏尺寸与截图尺寸无关（都是 1204×152）",
+          len(set(sizes)) == 1 and sizes[0] == (1204, 152), str(sizes))
 
 
-def test_toolbar_drag_placement(app: FakeApp) -> None:
-    """工具栏可以拖到任意位置（用来放到遮罩区、避开要看的内容）。"""
-    print("\n[17] 工具栏拖动摆放")
+def test_toolbar_follows_selection(app: FakeApp) -> None:
+    """工具栏自动跟随选区：换选区就换位置，永远整条可见可点。
+
+    （早期试过「可拖动的画布工具栏」作为「浮在遮罩上」的替代实现，但它改变了
+    默认行为、并非需求，已移除。）
+    """
+    print("\n[17] 工具栏自动跟随选区")
     W, H = 2880, 1800
     from snapctrlalt.geometry import Geometry  # noqa: PLC0415
 
@@ -622,44 +629,26 @@ def test_toolbar_drag_placement(app: FakeApp) -> None:
     geo = Geometry(img_w=W, img_h=H, root_w=W, root_h=H, win_w=W, win_h=H)
     o = TestOverlay(app, img, (0, 0, W, H), on_close=lambda r: None, geo=geo)
     o.ui_scale = 2.0
-    o.sel = (700.0, 300.0, 1900.0, 900.0)
     o.mode = "draw"
     o.tool = ov.T_RECT
-    o._layout_toolbar()
-    auto = o._tb_pos
-    check("初始为自动跟随选区", o._tb_offset is None, str(o._tb_offset))
 
-    # 模拟在工具栏空白处拖动
-    o._on_tb_drag_begin(None, auto[0] + 5, auto[1] + 5)
-    check("拖动开始后进入手动模式", o._tb_offset is not None, str(o._tb_offset))
-    o._on_tb_drag_update(None, -200.0, 300.0)
-    o._layout_toolbar()
-    moved = o._tb_pos
-    check("工具栏位置随拖动改变",
-          (round(moved[0]), round(moved[1])) != (round(auto[0]), round(auto[1])),
-          f"{auto[:2]} -> {moved[:2]}")
-    check("拖动后仍在屏幕内",
-          moved[0] >= 0 and moved[1] >= 0
-          and moved[0] + moved[2] <= W and moved[1] + moved[3] <= H,
-          f"{moved[0]:.0f},{moved[1]:.0f}..{moved[0] + moved[2]:.0f},{moved[1] + moved[3]:.0f}")
-    missed = [b.kind for b in o._buttons
-              if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
-    check("拖动后按钮仍全部可点", not missed, str(missed[:3]))
+    seen = []
+    for name, sel in (("居中", (700.0, 300.0, 1900.0, 900.0)),
+                      ("贴顶", (700.0, 4.0, 1900.0, 400.0)),
+                      ("贴底", (700.0, 1400.0, 1900.0, 1796.0)),
+                      ("细长", (1300.0, 300.0, 1600.0, 1200.0))):
+        o.sel = sel
+        o._layout_toolbar()
+        bx, by, bw, bh = o._tb_pos
+        seen.append((round(bx), round(by)))
+        inside = bx >= 0 and by >= 0 and bx + bw <= W and by + bh <= H
+        missed = [b.kind for b in o._buttons
+                  if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
+        check(f"{name}：工具栏整条可见", inside,
+              f"({bx:.0f},{by:.0f})..({bx + bw:.0f},{by + bh:.0f})")
+        check(f"{name}：按钮全部可点", not missed, str(missed[:3]))
 
-    # 拖到屏幕外面也要被拉回来
-    o._on_tb_drag_update(None, -9000.0, -9000.0)
-    o._layout_toolbar()
-    far = o._tb_pos
-    check("拖出屏幕会被拉回可视区",
-          far[0] >= 0 and far[1] >= 0,
-          f"({far[0]:.0f},{far[1]:.0f})")
-
-    # 在按钮上按下不应触发摆放（手势与点击互不干扰）
-    before = o._tb_offset
-    b = o._buttons[0]
-    o._on_press(o.win, _FakeEvent(x=int(b.x + b.w / 2), y=int(b.y + b.h / 2), button=1))
-    check("点按钮仍然切工具（不被拖动抢走）", o.tool == b.data, o.tool)
-    check("点按钮不改动摆放偏移", o._tb_offset == before, str(o._tb_offset))
+    check("换选区后工具栏位置跟着变", len(set(seen)) >= 3, str(seen))
     o.win.destroy()
 
 
@@ -716,7 +705,7 @@ def main() -> int:
                test_persist_and_finish, test_pin, test_toolbar_click_does_not_reset_selection,
                test_handles_work_with_any_tool, test_toolbar_reachable_for_any_selection,
                test_construction_smoke, test_editor_window,
-               test_toolbar_drag_placement, test_cancel):
+               test_toolbar_follows_selection, test_cancel):
         try:
             fn(app)
         except Exception:  # noqa: BLE001
