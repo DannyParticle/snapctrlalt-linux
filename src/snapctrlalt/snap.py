@@ -1394,7 +1394,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--perf", action="store_true",
                         help="测量覆盖层各交互路径的帧耗时后退出")
     parser.add_argument("--version", action="version", version=f"SnapCtrlAlt {__version__}")
+    parser.add_argument("--which", action="store_true",
+                        help="显示这次运行的代码来自哪个文件（排查多份副本时用）")
     args = parser.parse_args(argv)
+    if getattr(args, "which", False):
+        import snapctrlalt as _pkg
+
+        print(f"版本   : {__version__}")
+        print(f"代码来自: {Path(_pkg.__file__).resolve()}")
+        print(f"入口脚本: {Path(sys.argv[0]).resolve()}")
+        print("（同一台机器上可能有多份副本；用 python3 tools/restart_resident.py 对照）")
+        return 0
 
     if args.selftest:
         return selftest()

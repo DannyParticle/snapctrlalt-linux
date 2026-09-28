@@ -29,6 +29,49 @@ WATCH = [
 ]
 INSTALLED = Path("/usr/lib/python3/dist-packages/snapctrlalt/overlay.py")
 
+# 同一台机器上可能有**多份代码**，按 PATH 顺序谁在前就可能被谁接管：
+#   1. 仓库源码                      （开发时改的就是这份）
+#   2. ~/.local/share/snapctrlalt    （install.sh 复制的快照，不会自动跟着更新！）
+#   3. /usr/lib/python3/dist-packages（deb 安装的那份）
+# 用户报"装完还是旧的"，三次里有两次是这里没对齐。
+COPIES = [
+    ("仓库源码", lambda: ROOT / "src"),
+    ("~/.local 安装快照（install.sh）",
+     lambda: Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+     / "snapctrlalt" / "src"),
+    ("deb 安装", lambda: Path("/usr/lib/python3/dist-packages")),
+]
+
+
+def _version_in(src_dir: Path) -> str:
+    try:
+        for line in (src_dir / "snapctrlalt" / "__init__.py").read_text(
+                encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("__version__"):
+                return line.split('"')[1]
+    except OSError:
+        pass
+    return ""
+
+
+def report_copies() -> str:
+    """打印所有代码副本的版本，返回"仓库那份"的版本号。"""
+    print("代码副本：")
+    repo_ver = ""
+    for label, getter in COPIES:
+        d = getter()
+        v = _version_in(d)
+        if not v:
+            print(f"  {label:34s} 不存在")
+            continue
+        exact = ""
+        if repo_ver:
+            exact = "  ← 与仓库一致 ✓" if v == repo_ver else "  ← 落后于仓库 ✗"
+        print(f"  {label:34s} {v:8s}{exact}")
+        if not repo_ver:
+            repo_ver = v
+    return repo_ver
+
 
 def _boot_time() -> float:
     """开机时刻（/proc/stat 的 btime）。"""
@@ -99,6 +142,8 @@ def main() -> int:
     args = ap.parse_args()
 
     inst = find_instances()
+    repo_ver = report_copies()
+    print()
     newest, which = newest_change()
     print(f"磁盘上最新的代码：{time.strftime('%H:%M:%S', time.localtime(newest))}  {which}")
     if not inst:
@@ -146,18 +191,28 @@ def main() -> int:
         if ts < newest:
             stale.append(pid)
 
+    # 判定"陈旧"最可靠的办法：看这个入口实际会加载哪份代码、那份代码是什么版本。
+    # 只看进程启动时刻是不够的 —— 从 ~/.local/share/snapctrlalt（install.sh 的
+    # 快照，不会自动更新）启动的进程，即使刚起，跑的可能还是几小时前的代码。
     want = _launcher()
-    cur_exe = inst[0][1].split()[-1] if inst else ""
-    wrong_entry = bool(cur_exe) and Path(cur_exe).name == "snapctrlalt" and \
-        str(Path(cur_exe).resolve()) != str(Path(want).resolve())
+    by_version = repo_ver or _version_in(ROOT / "src")
+    entry_ver: dict[str, str] = {}
+    for pid, cmd, ts in inst:
+        exe = Path(cmd.split()[-1])
+        src = _nearby_src(exe)
+        v = _version_in(src) if src else ""
+        entry_ver[cmd] = v
+        where = str(src) if src else "（跟随系统包路径）"
+        flag = "✓" if v == by_version else "✗"
+        print(f"  入口 {exe.name} 加载 {where} → 版本 {v or '?'} {flag}")
+    stale = [pid for pid, cmd, ts in inst if entry_ver.get(cmd, "") != by_version]
     if not stale:
-        if not wrong_entry:
-            print("常驻实例就是当前代码，无需重启。")
-            return 0
-        print(f"代码是当前这份，但不是从 {want} 起的 —— 换成它，以后就跟仓库同步。")
-        if not args.restart:
-            return 0
-        stale = [pid for pid, _c, _t in inst]
+        print("常驻实例跑的就是当前代码，无需重启。")
+        return 0
+    if not args.restart:
+        print(f"\n有 {len(stale)} 个常驻实例跑的不是当前代码（共 {len(inst)} 个）。")
+        print("加 --restart 重启。")
+        return 1
     if not args.restart:
         print(f"\n有 {len(stale)} 个陈旧实例 —— 它们仍在使用旧代码。"
               f"加 --restart 重启。")
@@ -183,6 +238,18 @@ def main() -> int:
         ok = "✓" if ts >= newest else "✗ 仍然陈旧"
         print(f"现在：PID {pid} 启动 {time.strftime('%H:%M:%S', time.localtime(ts))} {ok}")
     return 0
+
+
+def _nearby_src(exe: Path) -> Path | None:
+    """入口脚本会优先加载"自己旁边的 ../src"（见 bin/snapctrlalt）。"""
+    try:
+        for base in (exe.resolve().parent, exe.parent):
+            src = base.parent / "src"
+            if (src / "snapctrlalt" / "__init__.py").is_file():
+                return src
+    except OSError:
+        pass
+    return None
 
 
 def _launcher() -> str:

@@ -35,6 +35,13 @@
 * `dist/` 里三个 tar 包按对应 tag 重新生成，内容与文件名一致；历史 deb 保留
   （经核对包内 `__version__` 与包声明一致）。
 * 新增 `tools/version_audit.py`：一键体检六处版本号。
+* 又发现**同一台机器上有三份代码**，PATH 里 `~/.local/bin/snapctrlalt` 在最前面，
+  而它加载的是 `~/.local/share/snapctrlalt`（`install.sh` 复制的**快照，不会自动
+  跟着仓库更新**，当时还停在 1.3.10）—— 终端里敲 `snapctrlalt` 看到的就是那份旧
+  代码。现在：`tools/restart_resident.py` 会列出所有副本的版本并指出**常驻实例
+  实际加载的是哪一份**（只看进程启动时刻会误判成"最新"，因为快照很旧但进程刚起）；
+  `install.sh` 重新执行以刷新快照；新增 `snapctrlalt --which` 直接打印
+  "版本 + 代码来自哪个文件"，多副本排查一眼就清楚。
 
 ## 1.3.12 — 工具栏上的「临时切换方案」按钮 + 陈旧实例检测
 
