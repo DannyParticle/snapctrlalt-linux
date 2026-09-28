@@ -1045,6 +1045,8 @@ class EditorWindow(AnnotationRenderer):
         self._color_before_pick: str | None = None
 
         self._base_ui_scale = float(ui_scale)
+        # 这张图来自屏幕原图的哪一块（方案① 的选区），切回方案① 时用它换算坐标
+        self.source_selection: tuple | None = None
         self._win_alloc: tuple[int, int] | None = None
         # 工具栏尺寸**只由 UI 缩放决定**，与截图尺寸无关。
         # 早期把宽度绑到了图宽上（avail = 图宽 - 8），于是截一张 936 宽的图时
@@ -1410,11 +1412,33 @@ class EditorWindow(AnnotationRenderer):
         self.toolbar_area.queue_draw()
         self.canvas.queue_draw()
 
+    def _shapes_to_source(self) -> list[dict]:
+        """编辑器标注（图片坐标）→ 屏幕原图坐标（切回方案① 用）。"""
+        ox, oy = self.source_selection[:2] if self.source_selection else (0.0, 0.0)
+        out: list[dict] = []
+        for s in self.shapes:
+            t = dict(s)
+            for key in ("p0", "p1", "xy"):
+                if key in t and t[key]:
+                    t[key] = (t[key][0] + ox, t[key][1] + oy)
+            if t.get("points"):
+                t["points"] = [(p[0] + ox, p[1] + oy) for p in t["points"]]
+            if t.get("box"):
+                x0, y0, x1, y1 = t["box"]
+                t["box"] = (x0 + ox, y0 + oy, x1 + ox, y1 + oy)
+            out.append(t)
+        return out
+
     def _switch_mode(self, mode: str) -> None:
-        """一键切到另一个工具栏形态（方案① 贴选区工具栏）。"""
+        """一键切到另一个工具栏形态（方案① 贴选区工具栏）。
+
+        **标注跟着走**（用户要求）：把已经画好的标注按来源选区偏移换算回原图坐标，
+        连同选区一起交给覆盖层。
+        """
         fn = getattr(self.app, "switch_toolbar_mode", None)
         if callable(fn):
-            fn(mode)
+            fn(mode, selection=self.source_selection,
+               shapes=self._shapes_to_source())
         else:
             self.win.destroy()
 

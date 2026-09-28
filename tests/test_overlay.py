@@ -66,9 +66,11 @@ class FakeApp:
         img.save(path)
         self.saved.append(str(path))
 
-    def switch_toolbar_mode(self, mode=None):
+    def switch_toolbar_mode(self, mode=None, selection=None, shapes=None):
+        # 现在会带上"选区 + 已画好的标注"（临时切换要保留标注）
         self.switched = getattr(self, "switched", [])
         self.switched.append(mode)
+        self.switch_payload = (selection, list(shapes or []))
         return mode or "editor"
 
     def pin_image(self, img):
@@ -840,6 +842,77 @@ def test_editor_toolbar_placement(app: FakeApp) -> None:
     ed.win.destroy()
 
 
+def test_switch_keeps_shapes(app: FakeApp) -> None:
+    """临时切换方案时，画好的标注要跟着走（双向）。
+
+    坐标链路（两边坐标系不同，这里把换算钉死）：
+      覆盖层画布坐标 --(÷zoom)--> 原图坐标 --(−选区原点)--> 编辑器图片坐标
+    反向再走一遍必须回到原值，否则切一次标注就漂了。
+    """
+    print("\n[26] 临时切换保留标注（坐标换算）")
+    W, H = 2880, 1800
+    sel = (700.0, 300.0, 2100.0, 1500.0)
+    o = _overlay_for(app, sel)
+    # 造几个典型标注（画布坐标）
+    o.shapes = [
+        {"tool": ov.T_RECT, "box": (760.0, 360.0, 960.0, 560.0),
+         "color": "#ff0000", "width": 4},
+        {"tool": ov.T_ARROW, "p0": (800.0, 400.0), "p1": (1000.0, 700.0),
+         "color": "#00ff00", "width": 4},
+        {"tool": ov.T_PEN, "points": [(900.0, 500.0), (950.0, 550.0)],
+         "color": "#0000ff", "width": 2},
+        {"tool": ov.T_SEQ, "xy": (1200.0, 800.0), "n": 1, "color": "#ff0000",
+         "size": 40.0},
+        {"tool": ov.T_TEXT, "xy": (1300.0, 900.0), "text": "hi",
+         "color": "#000000", "size": 30.0},
+    ]
+    before = [dict(s) for s in o.shapes]
+
+    # 方案① → 编辑器：转成图片坐标
+    img_shapes = o.shapes_to_selection()
+    check("转换后标注数量不变", len(img_shapes) == len(before), str(len(img_shapes)))
+    rect = img_shapes[0]["box"]
+    check("矩形换算到图片坐标（减去选区原点）",
+          abs(rect[0] - 60.0) < 0.01 and abs(rect[1] - 60.0) < 0.01,
+          str(tuple(round(v, 1) for v in rect)))
+    check("序列号/文字的位置也换算",
+          abs(img_shapes[3]["xy"][0] - 500.0) < 0.01
+          and abs(img_shapes[4]["xy"][1] - 600.0) < 0.01,
+          f"{img_shapes[3]['xy']} {img_shapes[4]['xy']}")
+
+    # 编辑器 → 方案①：加回选区原点，必须回到原值
+    ox, oy = sel[0], sel[1]
+    back = []
+    for t in img_shapes:
+        u = dict(t)
+        for key in ("p0", "p1", "xy"):
+            if key in u and u[key]:
+                u[key] = (u[key][0] + ox, u[key][1] + oy)
+        if u.get("points"):
+            u["points"] = [(p[0] + ox, p[1] + oy) for p in u["points"]]
+        if u.get("box"):
+            x0, y0, x1, y1 = u["box"]
+            u["box"] = (x0 + ox, y0 + oy, x1 + ox, y1 + oy)
+        back.append(u)
+    same = all(b.get("box") == a.get("box") and b.get("p0") == a.get("p0")
+               and b.get("p1") == a.get("p1") and b.get("xy") == a.get("xy")
+               and b.get("points") == a.get("points")
+               for a, b in zip(before, back))
+    check("来回一趟坐标不变（不漂移）", same, f"{back[0].get('box')}")
+
+    # adopt()：把原图坐标的标注塞回一个新覆盖层，应与原始画布坐标一致
+    o2 = _overlay_for(app, sel)
+    o2.shapes = []
+    o2.adopt(selection=sel, shapes=[dict(s) for s in before])
+    got = o2.shapes[0]["box"]
+    check("adopt 后与原坐标一致",
+          all(abs(a - b) < 0.01 for a, b in zip(got, before[0]["box"])),
+          f"{tuple(round(v, 1) for v in got)} vs {before[0]['box']}")
+    check("adopt 后选区也恢复", tuple(o2.sel) == sel, str(o2.sel))
+    o.win.destroy()
+    o2.win.destroy()
+
+
 def test_construction_smoke(app: FakeApp) -> None:
     """覆盖层必须能真的构造出来（真窗口，非离屏）。
 
@@ -1092,7 +1165,8 @@ def main() -> int:
                test_modal_freezes_overlay, test_cancel,
                test_color_panel_inside_toolbar, test_color_panel_drag,
                test_reselect_switch, test_toolbar_mode_switch_button,
-               test_toolbar_placements_and_drag, test_editor_toolbar_placement):
+               test_toolbar_placements_and_drag, test_editor_toolbar_placement,
+               test_switch_keeps_shapes):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

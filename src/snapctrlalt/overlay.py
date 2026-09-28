@@ -2144,6 +2144,77 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self.redo_stack.clear()
         self._redraw()
 
+    # ------------------------------------------------------------ 标注搬运
+    #
+    # 用户在方案① / 方案③ 之间临时切换时，**已经画好的标注要跟着走**
+    # （原来一切换就全丢，等于白画）。两边的坐标系不同：
+    #   覆盖层 = 画布坐标（设备像素）  ←→  原图坐标（除以 geo.zoom）
+    #   编辑器 = 图片坐标（选区已裁剪）←→  原图坐标（加上选区原点）
+
+    def _img_to_sel(self, x: float, y: float) -> tuple[float, float]:
+        """原图坐标 → 选区局部坐标（编辑器图片坐标系）。"""
+        ox, oy = (float(self.sel[0]), float(self.sel[1])) if self.sel else (0.0, 0.0)
+        return x - ox, y - oy
+
+    def shapes_to_image(self) -> list[dict]:
+        """当前标注（画布坐标）→ 原图坐标。"""
+        out: list[dict] = []
+        for s in self.shapes:
+            t = dict(s)
+            for key in ("p0", "p1", "xy"):
+                if key in t and t[key]:
+                    t[key] = self._to_img(*t[key])
+            if t.get("points"):
+                t["points"] = [self._to_img(*p) for p in t["points"]]
+            if t.get("box"):
+                x0, y0, x1, y1 = t["box"]
+                a = self._to_img(x0, y0)
+                b = self._to_img(x1, y1)
+                t["box"] = (a[0], a[1], b[0], b[1])
+            out.append(t)
+        return out
+
+    def shapes_to_selection(self) -> list[dict]:
+        """当前标注（画布坐标）→ 选区局部坐标（交给编辑器）。"""
+        img_shapes = self.shapes_to_image()
+        for t in img_shapes:
+            for key in ("p0", "p1", "xy"):
+                if key in t and t[key]:
+                    t[key] = self._img_to_sel(*t[key])
+            if t.get("points"):
+                t["points"] = [self._img_to_sel(*p) for p in t["points"]]
+            if t.get("box"):
+                x0, y0, x1, y1 = t["box"]
+                a = self._img_to_sel(x0, y0)
+                b = self._img_to_sel(x1, y1)
+                t["box"] = (a[0], a[1], b[0], b[1])
+        return img_shapes
+
+    def adopt(self, selection=None, shapes=None) -> None:
+        """接收从另一个形态带过来的选区与标注（标注是**原图坐标**）。"""
+        if selection:
+            self.sel = tuple(float(v) for v in selection)
+            self.mode = "draw"
+        for t in (shapes or []):
+            s = dict(t)
+            # 原图坐标 → 画布坐标
+            for key in ("p0", "p1", "xy"):
+                if key in s and s[key]:
+                    s[key] = self._to_disp(*s[key])
+            if s.get("points"):
+                s["points"] = [self._to_disp(*p) for p in s["points"]]
+            if s.get("box"):
+                x0, y0, x1, y1 = s["box"]
+                a = self._to_disp(x0, y0)
+                b = self._to_disp(x1, y1)
+                s["box"] = (a[0], a[1], b[0], b[1])
+            self.shapes.append(s)
+        self.redo_stack.clear()
+        self._seq_no = 1 + sum(1 for x in self.shapes if x.get("tool") == T_SEQ)
+        if self.shapes or selection:
+            self.status_cb(f"已保留 {len(self.shapes)} 个标注 · 继续标注或 Enter 完成")
+        self._redraw()
+
     # ------------------------------------------------------------ 工具切换
 
     def _activate(self, b: _Button) -> None:
@@ -2897,13 +2968,12 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
     def _switch_mode(self, mode: str) -> None:
         """一键切到另一个工具栏形态（工具栏上的「临时切换」按钮）。
 
-        不重新抓图：用同一张冻结画面重开覆盖层，所以画面不会变。当前窗口里的
-        标注会丢 —— 这正好当作「重来一次」，也省掉一个确认弹窗（用户要的是
-        「临时切换」，不是「放弃当前标注」的二次确认）。
+        **标注跟着走**（用户要求）：把选区与已经画好的标注一起交给另一边，
+        坐标换算见本文件"标注搬运"那一节。画面不重新抓，用的还是这张冻结图。
         """
         fn = getattr(self.app, "switch_toolbar_mode", None)
         if callable(fn):
-            fn(mode)
+            fn(mode, selection=self.sel, shapes=self.shapes_to_image())
         else:                              # 兜底：老接口，直接开编辑器
             self.open_in_editor()
 
@@ -2915,9 +2985,10 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         """
         img = self.render_result()
         self.status_cb(f"已在编辑器里打开 {img.width}×{img.height}")
+        sel, shapes = self.sel, self.shapes_to_image()
         self._close("editor")
         try:
-            self.app.open_editor(img)
+            self.app.open_editor(img, shapes=shapes, selection=sel)
         except Exception as e:  # noqa: BLE001
             print(f"[overlay] 打开编辑器失败: {e}")
 

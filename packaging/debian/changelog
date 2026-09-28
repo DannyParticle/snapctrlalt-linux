@@ -1,3 +1,16 @@
+snapctrlalt (1.5.0) unstable; urgency=medium
+
+  * Switching layouts temporarily (the toolbar button) now carries the
+    annotations over in both directions instead of discarding them: canvas
+    coordinates -> image coordinates -> cropped image coordinates and back,
+    covering every shape type (rect/ellipse/arrow/pen/highlight/text/seq/
+    mosaic/blur).  Clicking the button while already in the target layout is
+    now a no-op rather than a destructive restart.
+  * dbgtb prints every button's centre and action (TBGEO-B) so hardware
+    verification clicks by action instead of hand-computed coordinates.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 15:30:00 +0800
+
 snapctrlalt (1.4.5) unstable; urgency=medium
 
   * Fixed the horizontal toolbar in layout 3 being clipped.  It only spanned

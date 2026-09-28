@@ -276,8 +276,13 @@ class App:
                 pass
         return path
 
-    def open_editor(self, img: Image.Image) -> None:
-        """打开编辑器窗口（方案三）。完成/取消后回到托盘。"""
+    def open_editor(self, img: Image.Image, shapes: list | None = None,
+                    selection: tuple | None = None) -> None:
+        """打开编辑器窗口（方案三）。完成/取消后回到托盘。
+
+        ``shapes`` 是**图片坐标系**（编辑器画布）下的标注；``selection`` 是这块
+        图片在屏幕原图里的位置（供"切回方案①"时把标注换算回原图坐标）。
+        """
         from . import toolbar as tb_mod
         from .overlay import draw_icon
 
@@ -317,6 +322,11 @@ class App:
         self.editor = tb_mod.EditorWindow(
             img, on_commit=on_commit, on_cancel=on_cancel, app=self,
             ui_scale=_detect_ui_scale(self.cfg), icon_painter=draw_icon)
+        # 带着标注打开（从方案① 切过来时）：原始图片坐标，直接塞进去
+        if shapes:
+            self.editor.shapes = list(shapes)
+            self.editor.redo_stack.clear()
+        self.editor.source_selection = tuple(selection) if selection else None
         self.editor.show()
         self._shot_busy = True
         del scale
@@ -453,7 +463,9 @@ class App:
             return once
         return str(self.cfg.get("toolbar_mode", "canvas") or "canvas").lower()
 
-    def switch_toolbar_mode(self, mode: str | None = None) -> str:
+    def switch_toolbar_mode(self, mode: str | None = None,
+                            selection: tuple | None = None,
+                            shapes: list | None = None) -> str:
         """临时切到另一个工具栏形态，**只对下一次本窗口生效，不改默认设置**。
 
         用户要的是「方案① / 方案③ 的工具栏上直接点一下就能试另一个」，
@@ -464,12 +476,18 @@ class App:
         * 用**同一张截图**立刻重开覆盖层 —— 不重新抓图，画面不会变；
           当前窗口里的标注会丢（正好当作"重来一次"，不需要额外确认弹窗）。
 
+        ``selection`` / ``shapes`` 用来把**当前已经画好的标注带过去**（用户要求
+        "切换时保留已有标注"）：从方案① 切过来时给的是原图坐标的选区与标注，
+        从方案③ 切回去时给的是图片坐标（编辑器画布坐标系）。
+
         返回真正生效的目标形态。
         """
         cur = self._effective_toolbar_mode()
         want = (mode or ("editor" if cur == "canvas" else "canvas")).lower()
         if want not in ("canvas", "editor"):
             want = "canvas"
+        if want == cur:
+            return cur                     # 已经是这个形态：不动，别把标注搞丢
         self.cfg["_toolbar_mode_once"] = want
         shot = self._last_shot
         if not shot or shot[2] is None:
@@ -478,6 +496,8 @@ class App:
             self.trigger_shot()
         else:
             img, boxes, geo = shot
+            self._pending_selection = selection
+            self._pending_shapes = shapes or []
             if self.overlay is not None:
                 try:
                     self.overlay.cancel()
@@ -523,6 +543,14 @@ class App:
                 on_close=self._on_overlay_close, status_cb=self._status,
                 geo=geo, logical_size=self._logical_screen_size(),
             )
+            # 从方案③ 切回来：恢复选区与标注（标注已换算回原图坐标）
+            sel = getattr(self, "_pending_selection", None)
+            shapes = getattr(self, "_pending_shapes", None)
+            self._pending_selection = None
+            self._pending_shapes = None
+            if sel or shapes:
+                self.overlay.adopt(selection=sel, shapes=shapes)
+                log(f"已把 {len(shapes or [])} 个标注带到新形态（选区 {sel}）")
         except Exception as e:  # noqa: BLE001
             self._shot_busy = False
             log("覆盖层创建失败：\n" + traceback.format_exc())
@@ -1224,6 +1252,12 @@ class App:
                 corners = " ".join(
                     f"{c.data}:{c.x + c.w / 2:.0f},{c.y + c.h / 2:.0f}"
                     for c in (getattr(o, "_tb_corners", []) or []))
+                # 除了矩形/摆放，再把每个按钮的中心与语义打出来：真机核验脚本
+                # 直接按 action 找按钮去点，不必手算坐标（我手算错过两次）
+                btns = " ".join(
+                    f"{b.action}@{b.x + b.w / 2:.0f},{b.y + b.h / 2:.0f}"
+                    for b in (getattr(o, "_buttons", []) or []))
+                print(f"TBGEO-B {btns}", flush=True)
                 print(f"TBGEO 工具栏=({bx:.0f},{by:.0f},{bw:.0f}x{bh:.0f}) "
                       f"摆放={getattr(o, '_tb_place', 'auto')} "
                       f"竖排={int(bool(getattr(o, '_tb_vertical', False)))} "
