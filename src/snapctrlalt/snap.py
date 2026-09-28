@@ -152,6 +152,9 @@ class App:
         # 最近一次抓图的上下文：切换工具栏形态时直接用它重开覆盖层，
         # 不再重新抓图（否则切一下形态就换了一张截图，用户会觉得莫名）。
         self._last_shot: tuple[Image.Image, object, object] | None = None
+        # 当前屏幕上开着的形态（canvas=覆盖层 / editor=编辑器窗口），
+        # 由 _open_overlay / open_editor 在创建时写入，见 _effective_toolbar_mode
+        self._open_mode: str = ""
         self.tray: TrayIcon | None = None
         self.hotkeys = HotkeyManager()
         self.notifier = notify_linux.Notifier(enabled=bool(cfg.get("notify", True)))
@@ -322,6 +325,7 @@ class App:
         self.editor = tb_mod.EditorWindow(
             img, on_commit=on_commit, on_cancel=on_cancel, app=self,
             ui_scale=_detect_ui_scale(self.cfg), icon_painter=draw_icon)
+        self._open_mode = "editor"
         # 带着标注打开（从方案① 切过来时）：原始图片坐标，直接塞进去
         if shapes:
             self.editor.shapes = list(shapes)
@@ -457,7 +461,16 @@ class App:
             return 0
 
     def _effective_toolbar_mode(self) -> str:
-        """本次要用的工具栏形态：一次性覆盖优先，其次配置。"""
+        """**当前屏幕上开着**的形态。
+
+        优先用运行时字段 ``_open_mode``：临时切换不重新抓图，那个一次性的
+        ``_toolbar_mode_once`` 不会被消费，照它判断会把"现在开着编辑器"读成
+        canvas —— 于是"切回方案①"被当成"已经是 canvas 了"，直接返回、什么都不做
+        （用户实测"方案一临时切方案三却不行"就是这么来的）。
+        """
+        openmode = str(getattr(self, "_open_mode", "") or "").lower()
+        if openmode in ("canvas", "editor"):
+            return openmode
         once = str(self.cfg.get("_toolbar_mode_once", "") or "").lower()
         if once in ("canvas", "editor"):
             return once
@@ -543,6 +556,7 @@ class App:
                 on_close=self._on_overlay_close, status_cb=self._status,
                 geo=geo, logical_size=self._logical_screen_size(),
             )
+            self._open_mode = "canvas"
             # 从方案③ 切回来：恢复选区与标注（标注已换算回原图坐标）
             sel = getattr(self, "_pending_selection", None)
             shapes = getattr(self, "_pending_shapes", None)
@@ -580,6 +594,8 @@ class App:
 
     def _on_overlay_close(self, reason: str) -> None:
         self.overlay = None
+        if reason != "editor":
+            self._open_mode = ""
         self._shot_busy = False
         if reason == "editor":
             return                       # 交给编辑器窗口继续，别当作结束
@@ -1108,6 +1124,7 @@ class App:
             self.cfg["delay"] = int(spin_delay.get_value())
             self.cfg["ui_scale"] = combo_ui.get_active_id() or "auto"
             self.cfg["toolbar_mode"] = combo_tb.get_active_id() or "canvas"
+            self._open_mode = ""            # 下次截图按新默认形态开
             self.cfg["toolbar_mask_debug"] = chk_mask_dbg.get_active()
             self.cfg["reselect_on_empty"] = chk_reselect.get_active()
             self.cfg["show_tray"] = chk_tray.get_active()

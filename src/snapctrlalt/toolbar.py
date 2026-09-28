@@ -1125,7 +1125,7 @@ class EditorWindow(AnnotationRenderer):
         self.bottom.set_margin_bottom(8)
         self.bottom.set_margin_start(10)
         self.bottom.set_margin_end(10)
-        hint = Gtk.Label(label="滚轮缩放 · Ctrl+Z 撤销 · Enter 完成 · 点工具栏四角可换边")
+        hint = Gtk.Label(label="滚轮缩放 · Ctrl+Z 撤销 · Ctrl+E 切回方案① · Enter 完成 · 点工具栏四角可换边")
         hint.set_halign(Gtk.Align.START)
         hint.get_style_context().add_class("dim-label")
         self.bottom.pack_start(hint, True, True, 0)
@@ -1717,6 +1717,12 @@ class EditorWindow(AnnotationRenderer):
             return True
         if ctrl and kv in (Gdk.KEY_z, Gdk.KEY_Z):
             self.redo() if shift else self.undo()
+            return True
+        if ctrl and kv in (Gdk.KEY_e, Gdk.KEY_E):
+            # Ctrl+E：切回方案①（覆盖层工具栏）。**必须有这一支** —— 工具栏上
+            # 那个「临时切换」按钮已按 settings.MODE_SWITCH_BUTTON 收掉，
+            # 少了它编辑器这边就没有任何回去的路（用户实测"切不回去"）。
+            self._switch_mode("canvas")
             return True
         quick = {Gdk.KEY_r: T_RECT, Gdk.KEY_o: T_ELLIPSE, Gdk.KEY_a: T_ARROW,
                  Gdk.KEY_p: T_PEN, Gdk.KEY_h: T_HIGHLIGHT, Gdk.KEY_t: T_TEXT,

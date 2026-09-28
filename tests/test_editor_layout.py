@@ -185,6 +185,36 @@ def main() -> int:
             while _G.events_pending():
                 _G.main_iteration()
 
+    # ---- ③→① 必须有一条活路：工具栏按钮已收掉，Ctrl+E 必须仍然生效 ----
+    print("\n编辑器切回方案①（Ctrl+E）")
+    ed = tb.EditorWindow(Image.new("RGB", (400, 300), (30, 40, 50)),
+                         on_commit=lambda *a: None, ui_scale=2.0, app=None)
+    calls: list[str] = []
+
+    class _App:
+        cfg: dict = {}
+
+        def switch_toolbar_mode(self, mode=None, selection=None, shapes=None):
+            calls.append(mode)
+            return mode or "canvas"
+
+    ed.app = _App()
+    from gi.repository import Gdk as _G
+    for kv, ctrl, expect in ((_G.KEY_e, True, "canvas"), (_G.KEY_E, True, "canvas")):
+        calls.clear()
+        ev = _G.EventKey.new(_G.EventType.KEY_PRESS)
+        ev.keyval = kv
+        ev.state = _G.ModifierType.CONTROL_MASK if ctrl else 0
+        ed._on_key(ed.win, ev)
+        check(f"Ctrl+E（keyval={kv}）切回方案①", calls == [expect], str(calls))
+    ev = _G.EventKey.new(_G.EventType.KEY_PRESS)
+    ev.keyval = _G.KEY_e
+    ev.state = 0
+    calls.clear()
+    ed._on_key(ed.win, ev)
+    check("不带 Ctrl 的 e 不触发切换（那是快速选工具）", calls == [], str(calls))
+    ed.win.destroy()
+
     passed = sum(1 for _n, ok, _d in RESULTS if ok)
     total = len(RESULTS)
     print("\n" + "=" * 60)

@@ -1,3 +1,13 @@
+snapctrlalt (1.5.2) unstable; urgency=medium
+
+  * Fixed switching from layout 1 back from layout 3: the editor window had no
+    Ctrl+E binding at all (the toolbar button is hidden), and the app decided
+    the current layout from a one-shot flag that is only consumed on a new
+    capture, so "switch back to canvas" was treated as a no-op.  The app now
+    tracks the layout that is actually open (_open_mode).
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 17:20:00 +0800
+
 snapctrlalt (1.5.1) unstable; urgency=medium
 
   * The "switch layout" toolbar buttons are hidden again: clicking them did
