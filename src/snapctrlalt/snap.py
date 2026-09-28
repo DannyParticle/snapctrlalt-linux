@@ -441,6 +441,13 @@ class App:
         except Exception:  # noqa: BLE001
             return 0
 
+    def _effective_toolbar_mode(self) -> str:
+        """本次要用的工具栏形态：一次性覆盖优先，其次配置。"""
+        once = str(self.cfg.get("_toolbar_mode_once", "") or "").lower()
+        if once in ("canvas", "editor"):
+            return once
+        return str(self.cfg.get("toolbar_mode", "canvas") or "canvas").lower()
+
     def _open_overlay(self, img: Image.Image, boxes, geo) -> None:
         if self.overlay is not None:
             try:
@@ -847,13 +854,35 @@ class App:
         add_row(g4, r4, "界面缩放", combo_ui, "只影响工具栏/放大镜的大小，不影响截图")
 
         combo_tb = Gtk.ComboBoxText()
-        for cid, label in (("canvas", "画在覆盖层上（紧贴选区，推荐）"),
-                           ("editor", "选完区域后开编辑器窗口")):
+        for cid, label in (("canvas", "方案① 画在覆盖层上（紧贴选区，推荐）"),
+                           ("editor", "方案③ 选完区域后开编辑器窗口")):
             combo_tb.append(cid, label)
         cur_tb = str(self.cfg.get("toolbar_mode", "canvas") or "canvas").lower()
         combo_tb.set_active_id(cur_tb if cur_tb in ("canvas", "editor") else "canvas")
         add_row(g4, r4, "工具栏形态", combo_tb,
-                "覆盖层里按 Ctrl+E 也可以在两者之间切换")
+                "覆盖层里按 Ctrl+E 也可以在两者之间即时切换")
+
+        # 一键切到另一个方案（只改本次运行时的形态，不动上面的默认值）
+        box_switch = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        btn_to_editor = Gtk.Button(label="临时切到方案③")
+        btn_to_canvas = Gtk.Button(label="临时切到方案①")
+        box_switch.pack_start(btn_to_editor, False, False, 0)
+        box_switch.pack_start(btn_to_canvas, False, False, 0)
+        add_row(g4, r4, "切换", box_switch,
+                "只对接下来这次截图生效，默认值保持不变（改默认请用上面的下拉）")
+
+        # 方案②的情况写清楚，并给出调试入口（调试勾选在下面）
+        mask_note = Gtk.Label()
+        mask_note.set_markup(
+            "<small>方案②（独立窗口浮在遮罩上）<b>不可用</b>：实测窗口既不显示、"
+            "也收不到点击 —— 窗口管理器不允许后台程序把窗口提到活动窗口之上。"
+            "代码保留，需勾选下面的「调试」项才会启用，见 README。</small>")
+        mask_note.set_halign(Gtk.Align.START)
+        mask_note.set_xalign(0)
+        mask_note.set_line_wrap(True)
+        mask_note.get_style_context().add_class("dim-label")
+        g4.attach(mask_note, 1, r4[0], 1, 1)
+        r4[0] += 1
 
         g5, r5 = add_section(page2, "剪贴板")
         chk_primary = Gtk.CheckButton(label="同时写入 PRIMARY 选区（中键粘贴）")
@@ -1025,6 +1054,16 @@ class App:
             chk_primary.set_active(d["copy_to_primary"])
             chk_auto.set_active(app_settings.autostart_enabled())
 
+        def switch_once(mode: str) -> None:
+            """临时切换形态：只影响下一次截图，不改保存的默认值。"""
+            self.cfg["_toolbar_mode_once"] = mode
+            combo_tb.set_active_id(mode)
+            names = {"canvas": "方案①（覆盖层上）", "editor": "方案③（编辑器窗口）"}
+            self.notify(f"下一次截图将使用{names.get(mode, mode)}"
+                        "（默认值未改，按「保存」会写入下拉里的选择）")
+
+        btn_to_editor.connect("clicked", lambda _b: switch_once("editor"))
+        btn_to_canvas.connect("clicked", lambda _b: switch_once("canvas"))
         btn_dir.connect("clicked", browse)
         btn_shot.connect("clicked", lambda _b: self.trigger_shot())
         btn_save.connect("clicked", lambda _b: apply())
@@ -1107,6 +1146,12 @@ class App:
             self.quit()
         elif cmd == "dbgtb":
             o = self.overlay
+            if o is not None and getattr(o, "_tb_pos", None):
+                bx, by, bw, bh = o._tb_pos
+                print(f"TBGEO 工具栏=({bx:.0f},{by:.0f},{bw:.0f}x{bh:.0f}) "
+                      f"画布={o.cr_w}x{o.cr_h} ui={o.ui_scale}", flush=True)
+        elif cmd == "dbgtb":
+            o = self.overlay
             if o is not None:
                 print("dbgtb 画布=%sx%s ui_scale=%s 选区=%s 工具栏(UI)=%s "
                       "工具栏(画布)=%s 分配=%sx%s" % (
@@ -1136,6 +1181,14 @@ class App:
         self._apply_hotkeys()
         if resident:
             self.start_tray()
+            # 启动通知：让用户知道程序已经在托盘里跑起来了。
+            # 桌面通知会自己淡出（由通知服务控制时长），这里给 4 秒。
+            hotkey = str(self.cfg.get("hotkey", "") or "").strip() or "（未设置）"
+            GLib.timeout_add(600, lambda: (
+                self.notifier.notify(
+                    f"已启动并常驻托盘 · 按 {hotkey} 截图",
+                    title="SnapCtrlAlt 已启动", icon="camera-photo"),
+                False)[1])
             Gtk.main()
         return 0
 

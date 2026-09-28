@@ -234,6 +234,14 @@ def _rgba(hex_color: str):
     return r / 255.0, g / 255.0, b / 255.0, 1.0
 
 
+def _rgba_to_hex(c) -> str:
+    """Gdk.RGBA -> #rrggbb。"""
+    return "#{:02x}{:02x}{:02x}".format(
+        max(0, min(255, int(round(c.red * 255)))),
+        max(0, min(255, int(round(c.green * 255)))),
+        max(0, min(255, int(round(c.blue * 255)))))
+
+
 def _rounded_rect(cr: cairo.Context, x, y, w, h, r) -> None:
     r = min(r, w / 2.0, h / 2.0)
     cr.move_to(x + r, y)
@@ -803,6 +811,7 @@ class EditorWindow(AnnotationRenderer):
         self._drag: dict | None = None
         self._hover: Button | None = None
         self._zoom = 1.0
+        self._color_before_pick: str | None = None
 
         # 工具栏尺寸**只由 UI 缩放决定**，与截图尺寸无关。
         # 早期把宽度绑到了图宽上（avail = 图宽 - 8），于是截一张 936 宽的图时
@@ -960,6 +969,8 @@ class EditorWindow(AnnotationRenderer):
             self.tool = b.data
         elif a == "color":
             self.color = b.data
+        elif a == "custom_color":
+            self._pick_custom_color()
         elif a == "width":
             self.width = b.data
         elif a == "undo":
@@ -1136,6 +1147,42 @@ class EditorWindow(AnnotationRenderer):
                      "width": d.get("width", self.width)}
         self.shapes.append(shape)
         self.redo_stack.clear()
+
+    def _pick_custom_color(self) -> None:
+        """选自定义颜色。
+
+        早期方案三**根本没有处理 custom_color 动作**，所以点色环毫无反应；
+        方案一虽然接了，但对话框会被全屏覆盖层压在下面。两边现在都：
+        设 parent、置顶、present()，并把结果写回。
+        """
+        self._color_before_pick = self.color
+        dlg = Gtk.ColorChooserDialog(title="选择标注颜色", parent=self.win)
+        dlg.set_modal(True)
+        dlg.set_keep_above(True)
+        dlg.set_use_alpha(False)
+        rgba = Gdk.RGBA()
+        rgba.parse(self.color)
+        dlg.set_rgba(rgba)
+        # 实时预览：拖动取色时工具栏的色环跟着变，方便判断效果
+        dlg.connect("color-activated",
+                    lambda _d, c: self._preview_color(c))
+        dlg.connect("notify::rgba",
+                    lambda d, _p: self._preview_color(d.get_rgba()))
+        dlg.present()
+        resp = dlg.run()
+        if resp == Gtk.ResponseType.OK:
+            self.color = _rgba_to_hex(dlg.get_rgba())
+        else:
+            self.color = self._color_before_pick
+        dlg.destroy()
+        self.toolbar_area.queue_draw()
+        self.canvas.queue_draw()
+
+    def _preview_color(self, c) -> None:
+        if getattr(self, "_color_before_pick", None) is None:
+            self._color_before_pick = self.color
+        self.color = _rgba_to_hex(c)
+        self.toolbar_area.queue_draw()
 
     def undo(self) -> None:
         if not self.shapes:

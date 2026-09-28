@@ -1,3 +1,18 @@
+snapctrlalt (1.3.7) unstable; urgency=medium
+
+  * Fixed the custom colour picker, which did not work in either presentation:
+    the editor never handled the action at all, and in the overlay the dialog
+    ended up underneath the fullscreen window (run() inside it).  The dialog is
+    now non-blocking, transient for the overlay, and previews live while a
+    colour is dragged; cancelling restores the previous colour.
+  * The settings toolbar-presentation dropdown now labels which presentation is
+    which and offers a one-shot "switch to the other one" button that does not
+    change the saved default.
+  * A notification is shown once at startup; none is shown while the overlay is
+    open, so annotations are never covered.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 01:00:00 +0800
+
 snapctrlalt (1.3.6) unstable; urgency=medium
 
   * The settings dialog is now split into three tabs (hotkeys and capture,

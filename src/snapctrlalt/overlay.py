@@ -604,6 +604,8 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self._focus_guard = False
         self._finishing = False
         self._saving = False
+        self._color_dlg = None
+        self._color_before = COLORS[0]
 
         # 窗口
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -1880,22 +1882,56 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self.color = c
 
     def _pick_custom_color(self) -> None:
-        dlg = Gtk.ColorChooserDialog(title="选择标注颜色", parent=self.win)
+        """选自定义颜色（非阻塞）。
+
+        必须用非阻塞方式：覆盖层是全屏置顶窗口，`dlg.run()` 会在它下面，
+        对话框既可能被压住、也可能拿不到响应 —— 用户的感觉就是"选不了颜色"。
+        这里改为 show() + 信号回调，并把对话框设成覆盖层的临时窗口保证置顶。
+        """
+        if getattr(self, "_color_dlg", None) is not None:
+            self._color_dlg.present()
+            return
         self._focus_guard = True
+        self._color_before = self.color
+        dlg = Gtk.ColorChooserDialog(title="选择标注颜色", parent=self.win)
+        dlg.set_modal(False)
+        dlg.set_keep_above(True)
         dlg.set_use_alpha(False)
+        try:
+            dlg.set_transient_for(self.win)
+        except Exception:  # noqa: BLE001
+            pass
         rgba = Gdk.RGBA()
         rgba.parse(self.color)
         dlg.set_rgba(rgba)
-        resp = dlg.run()
+        # 实时预览：拖动取色时覆盖层的当前色跟着变
+        dlg.connect("notify::rgba",
+                    lambda d, _p: self._set_color(self._rgba_hex(d.get_rgba())))
+        dlg.connect("response", self._on_color_response)
+        dlg.connect("destroy", lambda *_: setattr(self, "_color_dlg", None))
+        self._color_dlg = dlg
+        dlg.show_all()
+        dlg.present()
+
+    def _on_color_response(self, dlg, resp) -> None:
         if resp == Gtk.ResponseType.OK:
-            c = dlg.get_rgba()
-            self._set_color("#{:02x}{:02x}{:02x}".format(
-                int(c.red * 255), int(c.green * 255), int(c.blue * 255)))
+            self._set_color(self._rgba_hex(dlg.get_rgba()))
+            self.status_cb(f"已选颜色 {self.color.upper()}")
+        else:
+            self._set_color(self._color_before)
+        self._color_dlg = None
         dlg.destroy()
         self._focus_guard = False
         self.win.present()
         self.area.grab_focus()
         self._redraw()
+
+    @staticmethod
+    def _rgba_hex(c) -> str:
+        return "#{:02x}{:02x}{:02x}".format(
+            max(0, min(255, int(round(c.red * 255)))),
+            max(0, min(255, int(round(c.green * 255)))),
+            max(0, min(255, int(round(c.blue * 255)))))
 
     # ------------------------------------------------------------ 文本
 
