@@ -182,16 +182,12 @@ def main() -> int:
         print("  ./packaging/build-deb.sh && sudo apt install "
               "dist/snapctrlalt_%s_all.deb" % src_ver)
 
-    stale = []
     for pid, cmd, ts in inst:
-        age = ("早于" if ts < newest else "晚于") + "当前代码"
-        flag = "陈旧 ✗" if ts < newest else "最新 ✓"
-        print(f"PID {pid}  启动 {time.strftime('%H:%M:%S', time.localtime(ts))}  "
-              f"{flag}（{age}）  {cmd}")
-        if ts < newest:
-            stale.append(pid)
+        # 进程比磁盘代码旧 ⇒ 即使它加载的副本版本对，也可能少了刚改的内容
+        note = "" if ts >= newest else "（进程启动早于磁盘最新改动）"
+        print(f"PID {pid}  启动 {time.strftime('%H:%M:%S', time.localtime(ts))}{note}")
 
-    # 判定"陈旧"最可靠的办法：看这个入口实际会加载哪份代码、那份代码是什么版本。
+    # 判定陈旧最可靠的办法：看这个入口实际会加载哪份代码、那份代码是什么版本。
     # 只看进程启动时刻是不够的 —— 从 ~/.local/share/snapctrlalt（install.sh 的
     # 快照，不会自动更新）启动的进程，即使刚起，跑的可能还是几小时前的代码。
     want = _launcher()
@@ -205,6 +201,10 @@ def main() -> int:
         where = str(src) if src else "（跟随系统包路径）"
         flag = "✓" if v == by_version else "✗"
         print(f"  入口 {exe.name} 加载 {where} → 版本 {v or '?'} {flag}")
+    # 判据是**加载的代码版本**，不是时间戳：
+    #   * 加载的副本版本 != 仓库版本 → 一定是旧代码，必须重启；
+    #   * 版本相同就不打扰 —— 时间戳只能说明"提交在进程启动之后"，
+    #     那时改的可能只是文档/工具，重启一次没必要。
     stale = [pid for pid, cmd, ts in inst if entry_ver.get(cmd, "") != by_version]
     if not stale:
         print("常驻实例跑的就是当前代码，无需重启。")
