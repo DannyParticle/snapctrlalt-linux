@@ -6,8 +6,35 @@
 ## 版本说明
 
 - `1.0.0` – `1.2.5`：**alpha**，自用开发阶段，接口与行为都在变。
-- `1.3.0` 起：**beta**，第一个对外发布的版本，功能集冻结到这个范围，
-  后续以修 bug 与打磨为主。
+- `1.3.0` – `1.3.12`：**beta**，第一个对外发布的版本线（`v1.3.0-beta1` …
+  `v1.3.12-beta` 每个版本都有 git tag，可逐版回溯）。
+- `1.4.0` 起：下一批功能（方案③ 四边切换与沿边滑动等）。
+  没有新功能就不动版本号——**改 bug 和补测试不升版本**，攒到一批再发。
+
+**版本号怎么改**（三处必须一致，`packaging/build-deb.sh` 会校验，不一致直接拒绝构建）：
+
+1. `src/snapctrlalt/__init__.py` 的 `__version__`
+2. `CHANGELOG.md` 顶部的 `## X.Y.Z — 标题`
+3. `packaging/debian/changelog` 顶部的 `snapctrlalt (X.Y.Z)`
+
+打包前先提交，再 `git tag -a vX.Y.Z-beta`（tar 包取自 HEAD，没提交就装不进快照）。
+随时用 `python3 tools/version_audit.py` 体检：源码 / deb / tar.gz / CHANGELOG /
+已安装 / git tag 六处对上才算过。
+
+## 版本治理（2026-09-28，无版本号变更，仍是 1.3.12）
+
+发现版本号本身一致，但**发布环节乱**，已修：
+
+* `build-deb.sh` 之前用 `git archive HEAD` 打 tar 包却不校验内容 —— 结果是
+  `snapctrlalt-linux-1.3.10.tar.gz` 里装着 1.3.9 的源码、`1.3.12` 的里装着
+  1.3.11（打包时改动还没提交）。现在：构建前校验
+  `__init__.py` / `debian/changelog` / `CHANGELOG.md` 三处版本一致、工作区干净、
+  HEAD 已含本次版本；打完 tar 包还会回读快照里的 `__version__` 复核，不符就删包退出。
+* `v1.3.1-beta` … `v1.3.12-beta` 共 12 个 git tag 补全（此前最后一个 tag 停在
+  `v1.3.0-beta1`，1.3.x 整条线没有标签）。
+* `dist/` 里三个 tar 包按对应 tag 重新生成，内容与文件名一致；历史 deb 保留
+  （经核对包内 `__version__` 与包声明一致）。
+* 新增 `tools/version_audit.py`：一键体检六处版本号。
 
 ## 1.3.12 — 工具栏上的「临时切换方案」按钮 + 陈旧实例检测
 

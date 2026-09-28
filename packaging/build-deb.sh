@@ -48,6 +48,50 @@ rm -rf "$BUILD"
 mkdir -p "$DIST" "$STAGE/DEBIAN"
 
 # ------------------------------------------------------------- validation ---
+# 版本号三处必须一致：src/snapctrlalt/__init__.py、debian/changelog、文件名。
+# 早先 1.3.10 的 deb 用的是 1.3.9 的代码、tar 包名字与内容不符，都是因为这里
+# 没校验 —— 发布件与版本号对不上是最难查的一类问题，宁可在这里直接失败。
+echo "==> version consistency"
+SRC_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/snapctrlalt/__init__.py | head -1)"
+CHANGELOG_VERSION="$(sed -n 's/^snapctrlalt (\([^)]*\)).*/\1/p' packaging/debian/changelog | head -1)"
+echo "    src=$SRC_VERSION  deb/changelog=$CHANGELOG_VERSION  building=$VERSION"
+if [ "$SRC_VERSION" != "$VERSION" ]; then
+    echo "!! src/snapctrlalt/__init__.py 里是 $SRC_VERSION，但本次构建 $VERSION" >&2
+    echo "   改版本号要同时改 __init__.py、CHANGELOG.md、packaging/debian/changelog" >&2
+    exit 1
+fi
+if [ "$CHANGELOG_VERSION" != "$VERSION" ]; then
+    # 例外：从历史 tag 重建旧版本（例如 v1.3.10-beta）时，changelog 顶部当然是新版。
+    # 这时只要求该版本历史上确实发布过（changelog 里有它的条目）。
+    if [ "$SRC_VERSION" = "$VERSION" ] || \
+       ! grep -q "^snapctrlalt ($VERSION)" packaging/debian/changelog; then
+        echo "!! packaging/debian/changelog 顶部是 $CHANGELOG_VERSION，不是 $VERSION" >&2
+        echo "   （只有"从历史 tag 重建"才允许不一致，且必须有该版本的 changelog 条目）" >&2
+        exit 1
+    fi
+    echo "   历史重建：$VERSION（changelog 顶部是 $CHANGELOG_VERSION，允许）"
+fi
+if ! grep -q "^## $VERSION\b" CHANGELOG.md; then
+    echo "!! CHANGELOG.md 里没有 $VERSION 小节" >&2
+    exit 1
+fi
+# tar 包是 `git archive HEAD`，所以工作区必须干净、HEAD 必须已经包含本次版本 ——
+# 否则打出来的快照是上一版（1.3.12 的 tar 里装着 1.3.11 就是这么来的）。
+if [ "${SKIP_OFFLINE:-0}" != "1" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+        echo "!! 工作区有未提交改动；tar 包会不含它们（先提交，或用 SKIP_OFFLINE=1）" >&2
+        git -C "$ROOT" status --short >&2
+        exit 1
+    fi
+    HEAD_VERSION="$(git -C "$ROOT" show HEAD:src/snapctrlalt/__init__.py 2>/dev/null \
+        | sed -n 's/^__version__ = "\(.*\)"/\1/p' | head -1)"
+    if [ "$HEAD_VERSION" != "$VERSION" ] && [ "$HEAD_VERSION" != "$SRC_VERSION" ]; then
+        echo "!! HEAD 提交里的版本是 $HEAD_VERSION，既不是 $VERSION 也不是 $SRC_VERSION" >&2
+        echo "   先提交版本号，再打包（tar 包取自 HEAD）" >&2
+        exit 1
+    fi
+fi
+
 echo "==> syntax check"
 python3 -m compileall -q src/snapctrlalt
 python3 -c "import ast,sys; [ast.parse(open(p).read(), p) for p in sys.argv[1:]]" \
@@ -221,6 +265,14 @@ if [ "${SKIP_OFFLINE:-0}" != "1" ] && git -C "$ROOT" rev-parse --git-dir >/dev/n
     git -C "$ROOT" archive --format=tar.gz --prefix="${PKG}-linux/" \
         -o "$TARBALL" HEAD 2>/dev/null && \
         echo "    $(basename "$TARBALL")  $(du -h "$TARBALL" | cut -f1)（源码快照）"
+    TAR_VERSION="$(tar -xzOf "$TARBALL" --wildcards "*/src/snapctrlalt/__init__.py" \
+        2>/dev/null | sed -n 's/^__version__ = "\(.*\)"/\1/p' | head -1)"
+    if [ "$TAR_VERSION" != "$VERSION" ]; then
+        echo "!! tar 包里的版本是 $TAR_VERSION，不是 $VERSION —— 删掉它，别发出去" >&2
+        rm -f "$TARBALL"
+        exit 1
+    fi
+    echo "    快照版本校验：$TAR_VERSION ✓"
 fi
 
 echo

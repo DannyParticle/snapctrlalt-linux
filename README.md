@@ -384,3 +384,22 @@ python3 tests/test_gui_e2e.py     # 端到端 28 项：真窗口 + XTEST 真鼠�
 
 - 许可：[MIT](LICENSE)
 - 交互与功能设计来自 Windows 版 SnapCtrlAlt（作者 mimo、DeepSeek Harness 与 DannyParticle）
+
+## 版本与发布
+
+版本号只在**发布**时变：`1.3.0` – `1.3.12` 是 beta 线（每版都有 tag，可回溯），
+下一批功能进 `1.4.0`；改 bug / 补测试不单独升版本。
+
+改版本号要同时改三处（`packaging/build-deb.sh` 会校验，不一致直接拒绝构建）：
+`src/snapctrlalt/__init__.py`、`CHANGELOG.md`、`packaging/debian/changelog`。
+改完先提交，再 `git tag -a vX.Y.Z-beta`（tar 快照取自 HEAD）。
+
+```bash
+python3 tools/version_audit.py                 # 六处版本号体检
+./packaging/build-deb.sh                       # 构建（含测试）
+git checkout v1.3.10-beta                      # 需要旧版本时从 tag 重建
+./packaging/build-deb.sh --version 1.3.10 --no-tests
+```
+
+产物都放在 `dist/`（deb、源码 tar.gz、含全部历史的 git bundle），`build/` 是中间目录，
+两者都不入库。
