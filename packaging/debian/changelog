@@ -1,3 +1,14 @@
+snapctrlalt (1.4.5) unstable; urgency=medium
+
+  * Fixed the horizontal toolbar in layout 3 being clipped.  It only spanned
+    one grid column, so the hint label in that column limited it to 994px of a
+    1440px window (right edge cut off, horizontal scrollbar), and the
+    ScrolledWindow reported only its minimum height (46px) instead of the
+    toolbar's 152px.  It now spans both columns and propagates its natural
+    height, so the whole toolbar is visible at the default window size.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 14:40:00 +0800
+
 snapctrlalt (1.4.4) unstable; urgency=medium
 
   * In the vertical layouts the four action buttons were stacked one per row,

@@ -1284,17 +1284,27 @@ class EditorWindow(AnnotationRenderer):
             Gtk.PolicyType.AUTOMATIC if not vertical else Gtk.PolicyType.NEVER,
             Gtk.PolicyType.AUTOMATIC if (not vertical or need_scroll)
             else Gtk.PolicyType.NEVER)
+        # ScrolledWindow 默认只按"最小尺寸"占位：横排时它只拿到 46px 高，而工具栏
+        # 有 152px —— 表现就是"横排显示不全、被裁掉一截"（用户实测）。
+        # 打开 propagate，让它按子控件的自然尺寸撑开。
+        try:
+            self.bar_scroll.set_propagate_natural_height(not vertical)
+            self.bar_scroll.set_propagate_natural_width(vertical)
+        except Exception:  # noqa: BLE001
+            pass
         self._layout_actions(vertical)
         if self.placement == "top":
-            self.grid.attach(self.bar_scroll, 0, 0, 1, 1)
-            self.grid.attach(self.canvas_scroll, 0, 1, 1, 1)
+            self.grid.attach(self.bar_scroll, 0, 0, 2, 1)
+            self.grid.attach(self.canvas_scroll, 0, 1, 2, 1)
             self.grid.attach(self.bottom, 0, 2, 1, 1)
             self.grid.attach(self.actions_grid, 0, 3, 1, 1)
         elif self.placement == "bottom":
             self.grid.attach(self.bottom, 0, 0, 1, 1)
             self.grid.attach(self.actions_grid, 1, 0, 1, 1)
-            self.grid.attach(self.canvas_scroll, 0, 1, 1, 1)
-            self.grid.attach(self.bar_scroll, 0, 2, 1, 1)
+            self.grid.attach(self.canvas_scroll, 0, 1, 2, 1)
+            # 工具栏跨满两列：只跨一列的话列宽会被同列的"提示语"撑成 994px，
+            # 工具栏被挤窄、右边被裁并冒出横向滚动条（用户实测"显示不全"）
+            self.grid.attach(self.bar_scroll, 0, 2, 2, 1)
         elif self.placement == "left":
             self.grid.attach(self.bar_scroll, 0, 0, 1, 1)
             self.grid.attach(self.canvas_scroll, 1, 0, 1, 1)

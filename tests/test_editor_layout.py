@@ -109,6 +109,36 @@ def main() -> int:
             while _G.events_pending():
                 _G.main_iteration()
 
+    # ---- 横排时工具栏必须拿到整个窗口宽度、高度完整（用户："横排的高度不对，显示不全"）----
+    print("\n横排工具栏的宽度与高度")
+    for place in ("top", "bottom"):
+        for size in ((1324, 825), (1600, 900)):
+            ed = tb.EditorWindow(Image.new("RGB", (1304, 854), (238, 242, 247)),
+                                 on_commit=lambda *a: None, ui_scale=2.0)
+            ed.win.set_default_size(*size)
+            ed.set_placement(place)
+            ed.win.resize(*size)
+            ed.show()
+            import time as _t
+            from gi.repository import Gtk as _G
+            for _ in range(110):
+                while _G.events_pending():
+                    _G.main_iteration()
+                _t.sleep(0.006)
+            a = ed.bar_scroll.get_allocation()
+            ts = ed.ts
+            tag = f"{place} {size[0]}×{size[1]}"
+            check(f"{tag}：工具栏高度分配完整", a.height >= ts.bar_h,
+                  f"{a.height} vs 条高 {ts.bar_h:.0f}")
+            check(f"{tag}：工具栏宽度分配 = 窗口宽（不被裁）", a.width >= min(size[0], ts.bar_w),
+                  f"{a.width} / 窗口 {size[0]} / 条宽 {ts.bar_w:.0f}")
+            check(f"{tag}：条本身是横排（宽 > 高）", ts.bar_w > ts.bar_h,
+                  f"{ts.bar_w:.0f}×{ts.bar_h:.0f}")
+            ed.destroy()
+            for _ in range(10):
+                while _G.events_pending():
+                    _G.main_iteration()
+
     # ---- 竖排时操作按钮条不能占掉一大块（用户截图里是 323px 宽、811px 高的窄条）----
     print("\n竖排时操作按钮的占比")
     for size in ((1300, 850), (1000, 700), (1500, 1000)):
