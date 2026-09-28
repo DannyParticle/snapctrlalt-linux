@@ -794,6 +794,8 @@ class EditorWindow(AnnotationRenderer):
                             root_w=self.img_w, root_h=self.img_h,
                             win_w=self.img_w, win_h=self.img_h)
 
+        # 底图 surface：缓存一份，避免每帧重新编码（编辑器画布每帧都要贴它）
+        self._base_surf = pil_to_surface(image.convert("RGB"))
         self.shapes: list[dict] = []
         self.redo_stack: list[dict] = []
         self._seq_no = 1
@@ -972,9 +974,16 @@ class EditorWindow(AnnotationRenderer):
     # ---------------------------------------------------------------- 画布
 
     def _on_canvas_draw(self, _w, cr) -> bool:
+        """先贴截图底图，再叠标注。
+
+        底图是必须的：早期版本只画了标注形状，于是窗口中间一片空白
+        （用户实测「没有截图显示」）—— 标注是画在截图上的，底图不画就只剩形状。
+        """
         z = self._zoom
         cr.save()
         cr.scale(z, z)
+        cr.set_source_surface(self._base_surf, 0, 0)
+        cr.paint()
         self._draw_shapes(cr)
         cr.restore()
         if self._drag and self._drag.get("preview"):
@@ -1149,7 +1158,7 @@ class EditorWindow(AnnotationRenderer):
         """把标注烧进图片，返回最终 PIL 图。"""
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.img_w, self.img_h)
         cr = cairo.Context(surf)
-        cr.set_source_surface(pil_to_surface(self.image.convert("RGB")), 0, 0)
+        cr.set_source_surface(self._base_surf, 0, 0)
         cr.paint()
         self._draw_shapes(cr)
         surf.flush()

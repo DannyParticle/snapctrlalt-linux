@@ -612,6 +612,57 @@ def test_editor_window(app: FakeApp) -> None:
     narrow.destroy()
 
 
+def test_toolbar_drag_placement(app: FakeApp) -> None:
+    """工具栏可以拖到任意位置（用来放到遮罩区、避开要看的内容）。"""
+    print("\n[17] 工具栏拖动摆放")
+    W, H = 2880, 1800
+    from snapctrlalt.geometry import Geometry  # noqa: PLC0415
+
+    img = make_screen(W // 8, H // 8, 1)
+    geo = Geometry(img_w=W, img_h=H, root_w=W, root_h=H, win_w=W, win_h=H)
+    o = TestOverlay(app, img, (0, 0, W, H), on_close=lambda r: None, geo=geo)
+    o.ui_scale = 2.0
+    o.sel = (700.0, 300.0, 1900.0, 900.0)
+    o.mode = "draw"
+    o.tool = ov.T_RECT
+    o._layout_toolbar()
+    auto = o._tb_pos
+    check("初始为自动跟随选区", o._tb_offset is None, str(o._tb_offset))
+
+    # 模拟在工具栏空白处拖动
+    o._on_tb_drag_begin(None, auto[0] + 5, auto[1] + 5)
+    check("拖动开始后进入手动模式", o._tb_offset is not None, str(o._tb_offset))
+    o._on_tb_drag_update(None, -200.0, 300.0)
+    o._layout_toolbar()
+    moved = o._tb_pos
+    check("工具栏位置随拖动改变",
+          (round(moved[0]), round(moved[1])) != (round(auto[0]), round(auto[1])),
+          f"{auto[:2]} -> {moved[:2]}")
+    check("拖动后仍在屏幕内",
+          moved[0] >= 0 and moved[1] >= 0
+          and moved[0] + moved[2] <= W and moved[1] + moved[3] <= H,
+          f"{moved[0]:.0f},{moved[1]:.0f}..{moved[0] + moved[2]:.0f},{moved[1] + moved[3]:.0f}")
+    missed = [b.kind for b in o._buttons
+              if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
+    check("拖动后按钮仍全部可点", not missed, str(missed[:3]))
+
+    # 拖到屏幕外面也要被拉回来
+    o._on_tb_drag_update(None, -9000.0, -9000.0)
+    o._layout_toolbar()
+    far = o._tb_pos
+    check("拖出屏幕会被拉回可视区",
+          far[0] >= 0 and far[1] >= 0,
+          f"({far[0]:.0f},{far[1]:.0f})")
+
+    # 在按钮上按下不应触发摆放（手势与点击互不干扰）
+    before = o._tb_offset
+    b = o._buttons[0]
+    o._on_press(o.win, _FakeEvent(x=int(b.x + b.w / 2), y=int(b.y + b.h / 2), button=1))
+    check("点按钮仍然切工具（不被拖动抢走）", o.tool == b.data, o.tool)
+    check("点按钮不改动摆放偏移", o._tb_offset == before, str(o._tb_offset))
+    o.win.destroy()
+
+
 def test_cancel(app: FakeApp) -> None:
     print("\n[11] 取消")
     reasons: list[str] = []
@@ -665,7 +716,7 @@ def main() -> int:
                test_persist_and_finish, test_pin, test_toolbar_click_does_not_reset_selection,
                test_handles_work_with_any_tool, test_toolbar_reachable_for_any_selection,
                test_construction_smoke, test_editor_window,
-               test_cancel):
+               test_toolbar_drag_placement, test_cancel):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

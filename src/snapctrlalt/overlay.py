@@ -579,6 +579,11 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self._tb_key: tuple | None = None
         # 工具栏位置要在这里就给初值：首次绘制之前若发生点击，_on_press 会读它
         self._tb_pos: tuple[float, float, float, float] | None = None
+        # 手动摆放时的偏移（相对自动位置的左上角）。None = 自动跟随选区。
+        # 拖工具栏空白处即可摆放 —— 这是「浮在遮罩上」这条需求的可用实现：
+        # 独立窗口压在覆盖层上会被盖住（实测收不到点击也不显示），而画在覆盖层
+        # 自己身上的工具栏天然不会被盖，还能拖到遮罩区任意位置。
+        self._tb_offset: tuple[float, float] | None = None
         self._frames = 0
         self._frame_ms = 0.0
         self._ptr_checked_at = 0.0
@@ -642,6 +647,11 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self.win.connect("destroy", self._on_destroy)
         self.win.connect("realize", self._on_realize)
         self.win.connect("focus-out-event", self._on_focus_out)
+        # 手势绑在 DrawingArea 上（绑在 Gtk.Window 上实测不会触发）
+        self._tb_gesture = Gtk.GestureDrag.new(self.area)
+        self._tb_gesture.set_button(1)
+        self._tb_gesture.connect("drag-begin", self._on_tb_drag_begin)
+        self._tb_gesture.connect("drag-update", self._on_tb_drag_update)
 
         x, y, w, h = self.box
         # 窗口几何用 GTK 逻辑坐标（会再被 GDK scale factor 放大到物理像素）；
@@ -1211,6 +1221,29 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         else:
             self._tb_window.hide()
 
+    def _on_tb_drag_begin(self, _g, x, y) -> None:
+        """工具栏空白处开始拖动 → 准备摆放（命中按钮的按下不会走到这里）。"""
+        if (self._tb_window is not None or self.sel is None
+                or self.mode != "draw" or self._tb_pos is None):
+            return
+        tbx, tby, tbw, tbh = self._tb_pos
+        if not (tbx <= x <= tbx + tbw and tby <= y <= tby + tbh):
+            return
+        self._tb_drag_last = (x, y)
+        if self._tb_offset is None:
+            self._tb_offset = (0.0, 0.0)
+
+    def _on_tb_drag_update(self, _g, dx, dy) -> None:
+        if self._tb_offset is None or not hasattr(self, "_tb_drag_last"):
+            return
+        lx, ly = self._tb_drag_last
+        nx, ny = lx + dx, ly + dy
+        self._tb_offset = (self._tb_offset[0] + (nx - lx),
+                           self._tb_offset[1] + (ny - ly))
+        self._tb_drag_last = (nx, ny)
+        self._layout_toolbar()
+        self._redraw()
+
     def _status_tip(self, tip: str) -> None:
         if tip:
             self.status_cb(tip)
@@ -1330,6 +1363,13 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         # 选区又高又贴边时（整屏选中、或贴着屏幕底部）上方也放不下，只能压在
         # 选区上 —— 但必须整条可见可点，所以最后统一夹进可视区间。
         by = min(max(by, margin), max(margin, H - bar_h - margin))
+
+        # 手动摆放过就按偏移走（用户拖到哪儿就放哪儿），仍然保证整条可见
+        if self._tb_offset is not None:
+            bx = bx + self._tb_offset[0]
+            by = by + self._tb_offset[1]
+            bx = min(max(bx, margin), max(margin, W - total_w - margin))
+            by = min(max(by, margin), max(margin, H - bar_h - margin))
 
         self._tb_pos = (bx, by, total_w, bar_h)
         self._tb_rows = len(rows)
