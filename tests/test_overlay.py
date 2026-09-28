@@ -41,7 +41,9 @@ class FakeApp:
     def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
         self.cfg = {"after_capture": "copy", "copy_to_primary": False,
-                    "save_format": "png", "jpeg_quality": 95}
+                    "save_format": "png", "jpeg_quality": 95,
+                    # 默认关（设置项）：点选区外重新框选会打断标注，测试里按需打开
+                    "reselect_on_empty": True}
         self.messages: list[str] = []
         self.status: list[str] = []      # 覆盖层状态栏消息
         self.saved: list[str] = []
@@ -528,6 +530,155 @@ def test_toolbar_reachable_for_any_selection(app: FakeApp) -> None:
         o.win.destroy()
 
 
+def _press(o, x, y, button=1):
+    """在覆盖层上模拟一次按下（走真实事件路径）。"""
+    from gi.repository import Gdk  # noqa: PLC0415
+
+    ev = Gdk.EventButton.new(Gdk.EventType.BUTTON_PRESS)
+    ev.window = None
+    ev.x = ev.y = 0.0
+    ev.button = button
+    ev.type = Gdk.EventType.BUTTON_PRESS
+    return ev
+
+
+def _fake_event(x, y, button=1, etype=None):
+    from gi.repository import Gdk  # noqa: PLC0415
+
+    class E:
+        pass
+
+    e = E()
+    e.type = etype or Gdk.EventType.BUTTON_PRESS
+    e.button = button
+    e.x = float(x)
+    e.y = float(y)
+    return e
+
+
+def _overlay_for(app, sel, W=2880, H=1800):
+    from snapctrlalt.geometry import Geometry  # noqa: PLC0415
+
+    img = make_screen(W // 8, H // 8, 1)
+    geo = Geometry(img_w=W, img_h=H, root_w=W, root_h=H, win_w=W, win_h=H)
+    o = TestOverlay(app, img, (0, 0, W, H), on_close=lambda r: None, geo=geo)
+    o.sel = tuple(float(v) for v in sel)
+    o.mode = "draw"
+    o.tool = ov.T_RECT
+    o._layout_toolbar()
+    return o
+
+
+def test_color_panel_inside_toolbar(app: FakeApp) -> None:
+    """取色面板必须是工具栏的一部分：不超宽、不越界、每条滑块都拖得动。
+
+    用户原话：「把选色栏集成到工具栏……不要超过工具栏」。面板宽严格等于工具栏
+    宽（同一 x、同一宽度），高按需生长；屏幕放不下时翻到工具栏上方，仍然整块
+    在可视区内 —— 早期版本被画到屏幕外，一点就重新截图（实测）。
+    """
+    print("\n[20] 取色面板集成在工具栏内（RGB + 灰度 + 常用色）")
+    W, H = 2880, 1800
+    shapes = [
+        ("中间", (1160, 700, 1720, 900)),
+        ("贴底边", (1100, 1650, 1780, 1798)),
+        ("贴顶边", (1100, 2, 1780, 300)),
+        ("贴左边缘", (2, 600, 560, 900)),
+        ("贴右边缘", (2700, 600, 2879, 900)),
+        ("整屏", (0, 0, W, H)),
+    ]
+    for name, sel in shapes:
+        o = _overlay_for(app, sel)
+        o._pick_custom_color()
+        check(f"{name}：面板已展开", o._palette_open)
+        px, py, pw, ph = o._palette_rect
+        bx, by, bw, bh = o._tb_pos
+        check(f"{name}：面板宽度不超过工具栏", pw <= bw + 0.5,
+              f"面板 {pw:.0f} / 工具栏 {bw:.0f}")
+        check(f"{name}：面板宽度贴齐工具栏", abs(px - bx) < 1.5 and abs(pw - bw) < 1.5,
+              f"面板 x {px:.0f}..{px + pw:.0f} / 工具栏 x {bx:.0f}..{bx + bw:.0f}")
+        inside = px >= 0 and py >= 0 and px + pw <= W and py + ph <= H
+        check(f"{name}：面板完整在屏幕内", inside,
+              f"矩形 {px:.0f},{py:.0f}..{px + pw:.0f},{py + ph:.0f}（画布 {W}×{H}）")
+        check(f"{name}：面板与工具栏不重叠",
+              py >= by + bh - 1 or py + ph <= by + 1,
+              f"面板 y {py:.0f}..{py + ph:.0f} / 工具栏 y {by:.0f}..{by + bh:.0f}")
+        o.win.destroy()
+
+
+def test_color_panel_drag(app: FakeApp) -> None:
+    """拖 R/G/B/灰度滑块应当实时改颜色，且点面板里任何地方都不穿透画布。"""
+    print("\n[21] 取色面板交互：拖滑块 / 常用色 / 不穿透")
+    o = _overlay_for(app, (1160, 700, 1720, 900))
+    o._pick_custom_color()
+    px, py, pw, ph = o._palette_rect
+    us = o.ui_scale
+    rows = {n: py + ry * us for n, ry, _rh in o._cp_rows()}
+    sx = px + 38 * us
+    ex = px + (38 + 214) * us
+
+    # 拖 R 到最右 -> R=255
+    o._cp_press(ex, rows["R"] + 4 * us)
+    o._cp_motion(ex, rows["R"] + 4 * us)
+    r, g, b = o._cp_current()
+    check("拖 R 滑块到最右：R=255", r == 255, f"#{o.color}")
+    o._cp_release()
+
+    # 拖 G/B 到最左 -> 0
+    o._cp_press(sx, rows["G"] + 4 * us)
+    o._cp_release()
+    o._cp_press(sx, rows["B"] + 4 * us)
+    o._cp_release()
+    r, g, b = o._cp_current()
+    check("拖 G/B 滑块到最左：G=B=0", g == 0 and b == 0, f"#{o.color}")
+    check("颜色随滑块更新到 self.color", o.color.upper() == "#FF0000", o.color)
+
+    # 灰度滑块推到 128 附近 -> 中性灰
+    mid = sx + (ex - sx) * 0.5
+    o._cp_press(mid, rows["灰度"] + 4 * us)
+    o._cp_release()
+    r, g, b = o._cp_current()
+    check("灰度滑块：三通道相等", r == g == b, f"#{o.color}")
+    check("灰度滑块：中点约 128", 120 <= r <= 136, f"#{o.color}")
+
+    # 常用色：点第一个（黑）直接取色并收起
+    o._pick_custom_color()
+    px, py, pw, ph = o._palette_rect
+    by = py + (o._cp_h() - o.CP_ROW) * us
+    swatch_x = px + (o.CP_PAD + 2 * (o.CP_SW + 4) + o.CP_SW / 2.0) * us
+    o._cp_press(swatch_x, by + o.CP_ROW / 2.0 * us)
+    check("点常用色：取到该颜色", o.color.upper() == o.CP_PRESETS[2].upper(),
+          f"{o.color} vs {o.CP_PRESETS[2]}")
+    check("点常用色后面板收起", not o._palette_open)
+
+    # 面板开着时点面板空白处：不穿透（选区保持、不开始画矩形）
+    o._pick_custom_color()
+    px, py, pw, ph = o._palette_rect
+    before = o.sel
+    o._on_press(o.area, _fake_event(px + 5 * us, py + 2 * us))
+    check("点面板空白处：选区没被清掉", o.sel == before, str(o.sel))
+    check("点面板空白处：面板仍在", o._palette_open)
+    # 点面板外：收起面板，且（默认关掉重新框选后）选区保持
+    o._on_press(o.area, _fake_event(px + pw / 2.0, py + ph + 60 * us))
+    check("点面板外：面板收起", not o._palette_open)
+    check("点面板外：选区保持（重新框选默认关）", o.sel == before, str(o.sel))
+    o.win.destroy()
+
+
+def test_reselect_switch(app: FakeApp) -> None:
+    """「点选区外重新框选」是设置开关，默认关：选区不被误清。"""
+    print("\n[22] 重新框选开关（默认关）")
+    o = _overlay_for(app, (1160, 700, 1720, 900))
+    app.cfg["reselect_on_empty"] = False
+    o._on_press(o.area, _fake_event(200, 1600))
+    check("默认关：点选区外不动选区", o.sel == (1160.0, 700.0, 1720.0, 900.0), str(o.sel))
+    check("默认关：模式仍是 draw", o.mode == "draw", o.mode)
+    app.cfg["reselect_on_empty"] = True
+    o._on_press(o.area, _fake_event(200, 1600))
+    check("打开后：点选区外重新框选", o.sel is None and o.mode == "select",
+          f"sel={o.sel} mode={o.mode}")
+    o.win.destroy()
+
+
 def test_construction_smoke(app: FakeApp) -> None:
     """覆盖层必须能真的构造出来（真窗口，非离屏）。
 
@@ -775,7 +926,9 @@ def main() -> int:
                test_handles_work_with_any_tool, test_toolbar_reachable_for_any_selection,
                test_construction_smoke, test_editor_window,
                test_toolbar_follows_selection, test_scale_reconciliation,
-               test_modal_freezes_overlay, test_cancel):
+               test_modal_freezes_overlay, test_cancel,
+               test_color_panel_inside_toolbar, test_color_panel_drag,
+               test_reselect_switch):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

@@ -612,7 +612,12 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self._modal_open = False
         self._palette_open = False
         self._palette_rect: tuple[float, float, float, float] | None = None
-        self._palette_hover: tuple[int, int] | None = None
+        self._palette_hover: str | None = None
+        self._cp_rgb: tuple[int, int, int] | None = None
+        self._cp_row: str | None = None
+        # 面板因为「用了取色器」而收起：这一次点击要交给取色工具，不能被
+        # 「点在外面就重新框选」抢走（否则取色变成重新拉框）。
+        self._cp_no_panel = False
 
         # 窗口
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -1339,7 +1344,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         row1_spec = [(tid, TOOL_TIPS[tid], "tool", tid) for tid in TOOL_ORDER]
 
         # ---- 第二排：颜色 / 线宽 / 编辑 / 收尾 ----
-        row2_spec = [("colorwheel", "自定义颜色…", "custom_color", None)]
+        row2_spec = [("colorwheel", "颜色面板 · RGB/灰度滑块 (C)", "custom_color", None)]
         row2_spec += [("swatch", f"颜色 {c.upper()}", "color", c, 22) for c in COLORS]
         row2_spec.append("sep")
         row2_spec += [(k, f"线宽 {w}px", "width", w)
@@ -1571,10 +1576,13 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         if self._palette_open:
             _x, _y = self._pos(event)
             _ix, _iy = self._to_img(_x, _y)
-            h = self._palette_hit(_ix, _iy)
-            if h != self._palette_hover:
-                self._palette_hover = h
-                self._redraw()
+            if self._cp_row:
+                self._cp_motion(_ix, _iy)
+            else:
+                h = self._palette_hit(_ix, _iy)
+                if h != self._palette_hover:
+                    self._palette_hover = h
+                    self._redraw()
         self._verify_pointer(event)
         x, y = self._pos(event)
         self._cursor = (x, y)
@@ -1607,21 +1615,26 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         x, y = self._pos(event)
         ix, iy = self._to_img(x, y)
 
-        # 取色面板优先：命中色块就取色，点在面板内其他地方不穿透
+        # 取色面板优先：面板内一律不穿透到画布
         if self._palette_open:
-            hit = self._palette_hit(ix, iy)
-            rect = self._palette_rect
-            if hit is not None:
-                self._set_color(self._palette_color(*hit))
-                self._palette_open = False
-                self.status_cb(f"已取色 {self.color.upper()}")
-                self._redraw()
-                return True
-            if rect and rect[0] <= ix <= rect[0] + rect[2] \
-                    and rect[1] <= iy <= rect[1] + rect[3]:
-                return True                    # 点在面板空白处：不穿透
-            self._palette_open = False         # 点在外面：收起面板
+            box = self._cp_box()
+            inner = self._palette_rect
+            inside = bool(
+                (inner and inner[0] <= ix <= inner[0] + inner[2]
+                 and inner[1] <= iy <= inner[1] + inner[3])
+                or (box and box[0] <= ix <= box[0] + box[2]
+                    and box[1] <= iy <= box[1] + box[3]))
+            if inside:
+                return self._cp_press(ix, iy)
+            self._cp_close()                   # 点在外面：先收起面板
             self._redraw()
+            # 这一下不穿透画布；落在工具栏上除外（那是要按按钮）
+            _on_tb = bool(
+                self._tb_window is None and self._tb_pos is not None
+                and self._tb_pos[0] <= x <= self._tb_pos[0] + self._tb_pos[2]
+                and self._tb_pos[1] <= y <= self._tb_pos[1] + self._tb_pos[3])
+            if not _on_tb:
+                return True
 
         # 双击 = 选整屏（QQ 截图行为）
         if event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS and event.button == 1:
@@ -1684,8 +1697,13 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             self._drag = {"kind": "resize", "handle": hname, "start": (ix, iy), "orig": self.sel}
             return True
 
-        # 点在选区外 -> 重新框选（QQ 行为）
+        # 点在选区外 -> 重新框选（QQ 行为）。用户实测这条规则会打断标注手势
+        # （鼠标划到选区外就丢掉选好的区域，得重截一次），所以做成开关。
         if not self._in_sel(ix, iy):
+            if self._cp_no_panel:
+                self._cp_no_panel = False      # 这次点击是"去取色"，不是"重新框选"
+            elif not self._reselect_on_empty():
+                return True                    # 关掉时：忽略，不动选区
             self.sel = None
             self.mode = "select"
             self._drag = {"kind": "select", "start": (ix, iy), "cur": (ix, iy), "preview": True}
@@ -1709,6 +1727,11 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         return True
 
     def _on_release(self, _w, event) -> bool:
+        if self._palette_open and event.button == 1:
+            if self._cp_row:
+                self._cp_release()
+                self.status_cb(f"颜色 {self.color.upper()}")
+                return True
         if self._closed or self._modal_open or event.button != 1 or not self._drag:
             return False
         x, y = self._pos(event)
@@ -1915,130 +1938,438 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
     def _set_color(self, c: str) -> None:
         self.color = c
 
-    # ------------------------------------------------ 取色面板（画在覆盖层上）
+    def _reselect_on_empty(self) -> bool:
+        """「点选区外重新框选」是否生效。
+
+        默认关（设置里可开）：早期它是 QQ 的行为，但实测在标注过程中鼠标划出
+        选区就会把选好的区域清掉，用户感觉是"又要重截一次"，干扰比方便多。
+        """
+        cfg = getattr(self.app, "cfg", None) or {}
+        try:
+            return bool(cfg.get("reselect_on_empty", False))
+        except Exception:  # noqa: BLE001
+            return False
+
+    # ------------------------------------------------ 取色面板（画在工具栏上）
     #
     # 为什么不用 Gtk.ColorChooserDialog：覆盖层是全屏置顶窗口，GTK 对话框会被它
     # 压在下面 —— 用户看不到、点不到，只觉得"卡住了，按 Esc 才恢复"（实测）。
-    # 画布上的面板是覆盖层自己画的一部分，天然在最上层，也没有独立的焦点问题。
+    #
+    # 为什么不做成浮在工具栏旁边的独立小窗：那样会盖住画面、跑出可视区，
+    # 也影响其他按钮（实测被画到屏幕外）。现在面板是**工具栏的一部分**：
+    # 宽度严格等于工具栏宽度（永远不超出工具栏），高度按需向下/向上生长，
+    # 松开后工具栏自己长高，不额外占用别的地方。
+    #
+    # 面板内容：R/G/B 三条渐变滑块 + 灰度滑块 + 常用色 + 取色器 + 当前值。
+    # 灰阶就是 R=G=B，所以灰度滑块 = 亮度，符合直觉。
 
-    _PALETTE_COLS = 10
-    _PALETTE_ROWS = 6
-    _PALETTE_SW = 26          # 每个色块的显示尺寸（会乘 ui_scale）
+    # 面板尺码一律是**设计像素**（绘制时上下文已经按 ui_scale 缩放过）
+    CP_PAD = 8
+    CP_ROW = 22              # 滑块行高
+    CP_GAP = 6               # 行距
+    CP_SW = 22               # 色块边长
+    CP_PRESETS = ["#000000", "#ffffff", "#ff3b30", "#ff9500", "#ffcc00", "#34c759",
+                  "#00c7be", "#007aff", "#5856d6", "#af52de", "#ff2d55", "#8e8e93"]
 
-    def _pick_custom_color(self) -> None:
-        """打开画布上的取色面板（左上角贴近工具栏）。"""
-        if self._palette_open:
-            self._palette_open = False
-            self._redraw()
-            return
-        self._palette_open = True
-        self._palette_hover: tuple[int, int] | None = None
-        # 全部用**画布坐标**算（与 _tb_pos、cr_w/cr_h 同一套）。
-        # 早期这里把色块尺寸先乘了 ui_scale、又和已经是画布坐标的 _tb_pos 相加，
-        # 而绘制时又除以 ui_scale —— 结果尺寸和位置都被放大了一倍，钳制失效，
-        # 面板被画到屏幕左上角外面去。
-        us = self.ui_scale
-        sw = self._PALETTE_SW * us          # 画布像素
-        pad = 8 * us
-        w = self._PALETTE_COLS * sw + pad * 2
-        h = self._PALETTE_ROWS * sw + pad * 2 + 26 * us
-        bx, by, _bw, bh = self._tb_pos or (0.0, 0.0, 0.0, 0.0)
-        margin = 8 * us
-        px = bx
-        py = by + bh + margin
-        # 下方放不下就放到工具栏上方；都放不下时贴住可视区
-        if py + h > self.cr_h - margin:
-            py = by - h - margin
-        px = min(max(px, margin), max(margin, self.cr_w - w - margin))
-        py = min(max(py, margin), max(margin, self.cr_h - h - margin))
-        self._palette_rect = (px, py, w, h)
-        self.status_cb("点击取色 · 再点一次色环可收起")
-        self._redraw()
-
-    def _palette_hit(self, x: float, y: float) -> tuple[int, int] | None:
-        """(x, y) 命中哪个色块；不在面板内返回 None。"""
-        rect = getattr(self, "_palette_rect", None)
-        if not rect or not self._palette_open:
-            return None
-        px, py, w, h = rect
-        us = self.ui_scale
-        sw = self._PALETTE_SW * us
-        pad = 8 * us
-        gx = int((x - px - pad) // sw)
-        gy = int((y - py - pad) // sw)
-        if 0 <= gx < self._PALETTE_COLS and 0 <= gy < self._PALETTE_ROWS:
-            return gx, gy
-        del w, h
-        return None
+    # ------------------------------------------------------------ 颜色换算
 
     @staticmethod
-    def _palette_color(gx: int, gy: int) -> str:
-        """色块索引 → 颜色。最后一排是灰阶，其余是色相×明度网格。"""
-        cols, rows = ShotOverlay._PALETTE_COLS, ShotOverlay._PALETTE_ROWS
-        if gy == rows - 1:
-            v = int(round(255 * gx / (cols - 1)))
-            return f"#{v:02x}{v:02x}{v:02x}"
-        hue = gx / float(cols) * 360.0
-        val = 1.0 - gy / float(rows - 1) * 0.75      # 越往下越深
-        sat = 0.35 + 0.65 * (gx % 2)
-        import colorsys
+    def _hex2rgb(c: str) -> tuple[int, int, int]:
+        c = (c or "#000000").strip().lstrip("#")
+        if len(c) == 3:
+            c = "".join(ch * 2 for ch in c)
+        try:
+            return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+        except ValueError:
+            return (0, 0, 0)
 
-        r, g, b = colorsys.hsv_to_rgb(hue / 360.0, sat, val)
-        return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+    @classmethod
+    def _rgb2hex(cls, r, g, b) -> str:
+        return "#{:02x}{:02x}{:02x}".format(
+            max(0, min(255, int(round(r)))),
+            max(0, min(255, int(round(g)))),
+            max(0, min(255, int(round(b)))))
+
+    @classmethod
+    def _rgb2hsv(cls, r, g, b) -> tuple[float, float, float]:
+        import colorsys
+        return colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+
+    @classmethod
+    def _hsv2hex(cls, h: float, s: float, v: float) -> str:
+        import colorsys
+        r, g, b = colorsys.hsv_to_rgb(h, min(1.0, max(0.0, s)), min(1.0, max(0.0, v)))
+        return cls._rgb2hex(r * 255, g * 255, b * 255)
+
+    def _cp_current(self) -> tuple[int, int, int]:
+        """当前编辑中的颜色。打开面板时从 self.color 取一次，之后跟着滑块走。"""
+        if getattr(self, "_cp_rgb", None) is None:
+            self._cp_rgb = self._hex2rgb(self.color)
+        return self._cp_rgb
+
+    # ------------------------------------------------------------ 布局 / 开合
+
+    # 面板内的小尺码（设计像素；内宽 = 工具栏宽，不另设宽度）
+    CP_LBL = 30          # 左侧通道名（R / G / B / 灰度）
+    CP_VAL = 44          # 右侧数值
+    CP_TRACK = 214       # 滑块轨道长
+    CP_HINT_W = 236      # 底部「常用色 / 取色器」提示区
+
+    def _cp_h(self) -> float:
+        """面板高度（设计像素）= 4 条滑块 + 底部常用色/取色器一行。"""
+        rows = 4 * self.CP_ROW + 3 * self.CP_GAP
+        return self.CP_PAD * 2 + rows + self.CP_GAP * 2 + self.CP_ROW
+
+    @classmethod
+    def _cp_rows(cls):
+        """[(通道名, 设计 y 顶边, 设计行高), ...]，含灰度行。"""
+        return [(name, cls.CP_PAD + i * (cls.CP_ROW + cls.CP_GAP), float(cls.CP_ROW))
+                for i, name in enumerate(("R", "G", "B", "灰度"))]
+
+    # ---- 部件矩形：一律给**设计坐标**（左上角原点），绘制与命中共用 ----
+
+    def _cp_slider_rect(self, name: str):
+        """某条滑块的轨道矩形（设计坐标）。"""
+        for n, ry, rh in self._cp_rows():
+            if n == name:
+                return (self.CP_PAD + self.CP_LBL, ry, float(self.CP_TRACK), rh)
+        return None
+
+    @classmethod
+    def _cp_swatch_rects(cls):
+        """常用色块的矩形列表（设计坐标）。"""
+        out = []
+        for i, c in enumerate(cls.CP_PRESETS):
+            out.append((c, cls.CP_PAD + i * (cls.CP_SW + 4), cls._cp_bottom_y(),
+                        float(cls.CP_SW), float(cls.CP_SW)))
+        return out
+
+    @classmethod
+    def _cp_bottom_y(cls) -> float:
+        return cls.CP_PAD + 4 * cls.CP_ROW + 3 * cls.CP_GAP + cls.CP_GAP * 2
+
+    @classmethod
+    def _cp_picker_rect(cls):
+        x = cls.CP_PAD + len(cls.CP_PRESETS) * (cls.CP_SW + 4) + 2
+        return (x, cls._cp_bottom_y(), 30.0, float(cls.CP_SW))
+
+    @classmethod
+    def _cp_hint_rect(cls):
+        x = cls._cp_picker_rect()[0] + 30 + 8
+        return (x, cls._cp_bottom_y(), float(cls.CP_HINT_W), float(cls.CP_ROW))
+
+    def _cp_row_at(self, x: float, y: float) -> str | None:
+        """(x, y)（画布坐标）命中了哪一条滑块的**轨道**。"""
+        if not self._palette_open or not self._palette_rect:
+            return None
+        px, py, pw, ph = self._palette_rect
+        if not (px <= x <= px + pw and py <= y <= py + ph):
+            return None
+        us = max(0.1, self.ui_scale)
+        for name, _ry, _rh in self._cp_rows():
+            rx, ry, rw, rh = self._cp_slider_rect(name)
+            if px + rx * us <= x <= px + (rx + rw) * us \
+                    and py + ry * us <= y <= py + (ry + rh) * us:
+                return name
+        return None
+
+    def _cp_widget_at(self, x: float, y: float) -> str | None:
+        """色块 / 取色器 / 提示区的命中测试（画布坐标 → 标签）。"""
+        if not self._palette_rect:
+            return None
+        px, py, pw, ph = self._palette_rect
+        us = max(0.1, self.ui_scale)
+        for c, sx, sy, sw, sh in self._cp_swatch_rects():
+            if px + sx * us <= x <= px + (sx + sw) * us \
+                    and py + sy * us <= y <= py + (sy + sh) * us:
+                return f"preset:{c}"
+        kx, ky, kw, kh = self._cp_picker_rect()
+        if px + kx * us <= x <= px + (kx + kw) * us \
+                and py + ky * us <= y <= py + (ky + kh) * us:
+            return "picker"
+        hx, hy, hw, hh = self._cp_hint_rect()
+        if px + hx * us <= x <= px + (hx + hw) * us \
+                and py + hy * us <= y <= py + (hy + hh) * us:
+            return "blank"
+        del pw, ph
+        return None
+
+    def _cp_set_channel(self, name: str, fx: float) -> None:
+        """把某个通道设到 0..1 的位置。"""
+        r, g, b = self._cp_current()
+        val = int(round(max(0.0, min(1.0, fx)) * 255))
+        if name == "R":
+            r = val
+        elif name == "G":
+            g = val
+        elif name == "B":
+            b = val
+        else:                                   # 灰度：直接推成中性灰（R=G=B）
+            r = g = b = val
+        self._cp_rgb = (r, g, b)
+        self.color = self._rgb2hex(r, g, b)
+
+    def _pick_custom_color(self) -> None:
+        """打开工具栏内的取色面板；已经开着时只重算位置（不收起）。
+
+        收起面板的入口有三个：点常用色、点取色器、点面板外（见 ``_cp_press``
+        与 ``_on_press``）。色环按钮本身不负责收起：面板开着时点工具栏，
+        ``_on_press`` 已经先把面板收掉、再把这一下交给按钮，所以按钮这边
+        再「开一次」才是用户看到的结果。
+        """
+        self._palette_open = True
+        self._cp_rgb = self._hex2rgb(self.color)
+        self._cp_row = None
+        self._palette_hover = None
+        self._palette_rect = self._cp_layout()
+        self.status_cb(f"颜色 {self.color.upper()} · 拖 R/G/B 或灰度滑块 · 点面板外收起")
+        self._redraw()
+
+    # ------------------------------------------------------------ 定位
+
+    def _tb_layout_rect(self) -> tuple[float, float, float, float] | None:
+        """工具栏**完整矩形**（含 Row2 之后的取色面板行）。
+
+        ``_tb_pos`` 只覆盖两排按钮；打开取色面板后工具栏会长高，命中测试要用
+        含面板的那个矩形，否则点在面板上会被当成「点在工具栏外」而清掉选区。
+        """
+        if not self._tb_pos:
+            return None
+        x, y, w, h = self._tb_pos
+        if self._palette_open and self._palette_rect:
+            pr = self._palette_rect
+            top = min(y, pr[1] - 6.0 * self.ui_scale)
+            bottom = max(y + h, pr[1] + pr[3])
+            left = min(x, pr[0])
+            right = max(x + w, pr[0] + pr[2])
+            return (left, top, right - left, bottom - top)
+        return (x, y, w, h)
+
+    def _cp_layout(self) -> tuple[float, float, float, float] | None:
+        """面板矩形（画布坐标）。宽度 = 工具栏宽度，整体永远在可视区内。"""
+        us = max(0.1, self.ui_scale)
+        bx, by, bw, bh = self._tb_pos or (0.0, 0.0, 0.0, 0.0)
+        w = float(bw)                       # 与工具栏同宽：不可能「超过工具栏」
+        h = self._cp_h() * us
+        margin = 8.0 * us
+        px = float(bx)
+        py = float(by + bh)                 # 紧贴工具栏下沿，中间不留缝
+        if py + h > self.cr_h - margin:
+            py = float(by - h)              # 下方放不下就翻到上方
+        px = min(max(px, margin), max(margin, self.cr_w - w - margin))
+        py = min(max(py, margin), max(margin, self.cr_h - h - margin))
+        return (px, py, w, h)
+
+    def _cp_box(self) -> tuple[float, float, float, float] | None:
+        """含 6px 间隙的外框：间隙里的点击也算「面板内」，不穿透到画布。"""
+        r = self._palette_rect
+        if not r:
+            return None
+        m = 6.0 * max(0.1, self.ui_scale)
+        return (r[0], r[1] - m, r[2], r[3] + m)
+
+    def _palette_hit(self, x: float, y: float) -> str | None:
+        """面板当前指向的部件标签（滑块名 / 'preset:#..' / 'picker' / 'blank'）。"""
+        if not self._palette_open or not self._palette_rect:
+            return None
+        row = self._cp_row_at(x, y)
+        if row:
+            return row
+        return self._cp_widget_at(x, y)
+
+    # ------------------------------------------------------------ 交互
+
+    def _cp_value_at(self, name: str, x: float) -> float:
+        """滑块轨道上的 0..1 位置。"""
+        _rx, _ry, rw, _rh = self._cp_slider_rect(name)
+        px = self._palette_rect[0]
+        us = max(0.1, self.ui_scale)
+        x0 = px + (self.CP_PAD + self.CP_LBL) * us
+        x1 = x0 + rw * us
+        if x1 <= x0:
+            return 0.0
+        return (x - x0) / (x1 - x0)
+
+    def _cp_press(self, x: float, y: float) -> bool:
+        """面板内的按下。返回 True 表示已消费（不穿透画布）。"""
+        row = self._cp_row_at(x, y)
+        if row:
+            self._cp_row = row
+            self._cp_set_channel(row, self._cp_value_at(row, x))
+            self.status_cb(f"颜色 {self.color.upper()}")
+            self._redraw()
+            return True
+        hit = self._cp_widget_at(x, y)
+        if hit and hit.startswith("preset:"):
+            self.color = hit.split(":", 1)[1]
+            self._cp_rgb = self._hex2rgb(self.color)
+            self.status_cb(f"颜色 {self.color.upper()}")
+            self._cp_close()
+            self._redraw()
+            return True
+        if hit == "picker":
+            # 收起面板并切到取色工具：点画面即可取色（取完自动回到矩形）
+            self._cp_no_panel = True
+            self._cp_close()
+            self._cp_rgb = self._hex2rgb(self.color)
+            self._set_tool(T_PICKER)
+            self.status_cb("点击画面取色 · 取到的颜色会用于标注")
+            return True
+        return True                        # 面板矩形内一律不穿透
+
+    def _cp_release(self) -> None:
+        self._cp_row = None
+
+    def _cp_close(self) -> None:
+        """收起面板并清掉缓存定位（下次打开按当前工具栏位置重算）。"""
+        self._palette_open = False
+        self._palette_rect = None
+        self._palette_hover = None
+        self._cp_row = None
+        self._cp_no_panel = False
+
+    def _cp_motion(self, x: float, y: float) -> None:
+        if self._cp_row:
+            self._cp_set_channel(self._cp_row, self._cp_value_at(self._cp_row, x))
+            self._redraw()
+
+    # ------------------------------------------------------------ 绘制
+
+    def _draw_slider(self, cr, x, y, w, h, c0, c1, pos, label, val) -> None:
+        """一条渐变滑块：底色渐变 + 游标 + 左侧名称 + 右侧数值。"""
+        cr.set_line_width(1)
+        grad = cairo.LinearGradient(x, 0, x + w, 0)
+        grad.add_color_stop_rgb(0, *c0)
+        grad.add_color_stop_rgb(1, *c1)
+        cr.rectangle(x, y, w, h)
+        cr.set_source(grad)
+        cr.fill_preserve()
+        cr.set_source_rgba(0.55, 0.55, 0.58, 1)
+        cr.stroke()
+        # 游标
+        cx = x + max(0.0, min(1.0, pos)) * w
+        cr.rectangle(cx - 2, y - 2, 4, h + 4)
+        cr.set_source_rgba(1, 1, 1, 0.95)
+        cr.fill_preserve()
+        cr.set_line_width(1.5)
+        cr.set_source_rgba(0.05, 0.05, 0.06, 0.9)
+        cr.stroke()
+        # 名称
+        layout = PangoCairo.create_layout(cr)
+        layout.set_font_description(_font(10))
+        layout.set_text(label, -1)
+        cr.set_source_rgba(0.11, 0.11, 0.12, 1)
+        cr.move_to(x - self.CP_LBL + 6, y + 1)
+        PangoCairo.show_layout(cr, layout)
+        # 数值
+        layout2 = PangoCairo.create_layout(cr)
+        layout2.set_font_description(_font(10))
+        layout2.set_text(str(int(round(val))), -1)
+        cr.set_source_rgba(0.11, 0.11, 0.12, 1)
+        cr.move_to(x + w + 8, y + 1)
+        PangoCairo.show_layout(cr, layout2)
 
     def _draw_palette(self, cr) -> None:
-        """画取色面板。
+        """画工具栏内的取色面板（紧贴工具栏，宽度与工具栏完全相同）。
 
-        ``_palette_rect`` 存的是**画布坐标**（与命中测试一致），而这里的上下文
-        已经按 ui_scale 缩放过（与工具栏同一套约定），所以绘制前统一除回来。
+        **单位**：绘制上下文和工具栏一样是**画布坐标**（``_on_draw`` 里 k=1，
+        见那里的说明），而面板的尺码常量都是设计像素，所以这里先平移到面板
+        左上角、再按 ``ui_scale`` 缩放一次，之后一律用设计坐标画 —— 命中测试
+        用的 ``_cp_slider_rect`` / ``_cp_swatch_rects`` 给的就是设计坐标，
+        绘制与命中从此共用同一份数字。
+
+        （早期这里把面板矩形除以 ``ui_scale`` 当坐标用，于是画在屏幕另一处、
+        大小只有一半：用户看到的是「面板不知道跑哪去了，点一下还重新截图」。）
         """
         if not self._palette_open:
             return
-        rect = getattr(self, "_palette_rect", None)
+        rect = self._palette_rect
+        if not rect:
+            rect = self._palette_rect = self._cp_layout()
         if not rect:
             return
         us = max(0.1, self.ui_scale)
-        px, py = rect[0] / us, rect[1] / us
-        sw = self._PALETTE_SW
-        pad = 8.0
-        cols, rows = self._PALETTE_COLS, self._PALETTE_ROWS
+        r, g, b = self._cp_current()
+        w_d, h_d = rect[2] / us, rect[3] / us
+
         cr.save()
-        w = cols * sw + pad * 2
-        h = rows * sw + pad * 2 + 26
-        self._rounded_rect(cr, px, py, w, h, 8)
-        cr.set_source_rgba(0.949, 0.949, 0.969, 0.99)
+        cr.translate(rect[0], rect[1])
+        cr.scale(us, us)
+        # 底 + 边框：与工具栏拼成一块，所以上方不画圆角
+        self._rounded_rect(cr, 0, 0, w_d, h_d, 8)
+        cr.set_source_rgba(*BAR_BG)
         cr.fill_preserve()
         cr.set_line_width(1)
-        cr.set_source_rgba(0.78, 0.78, 0.80, 1.0)
+        cr.set_source_rgba(*BAR_BORDER)
         cr.stroke()
-        for gy in range(rows):
-            for gx in range(cols):
-                col = _rgba(self._palette_color(gx, gy))
-                x = px + pad + gx * sw
-                y = py + pad + gy * sw
-                cr.rectangle(x + 1, y + 1, sw - 2, sw - 2)
-                cr.set_source_rgba(col[0], col[1], col[2], 1)
-                cr.fill()
-                if (gx, gy) == self._palette_hover:
-                    cr.set_line_width(2.5)
-                    cr.set_source_rgba(0.04, 0.52, 1.0, 1)
-                    cr.rectangle(x + 1, y + 1, sw - 2, sw - 2)
-                    cr.stroke()
-        # 底部：当前色预览 + 当前值
-        cur = _rgba(self.color)
-        ybase = py + pad + rows * sw + 4
-        cr.rectangle(px + pad, ybase, 22, 18)
-        cr.set_source_rgba(cur[0], cur[1], cur[2], 1)
+
+        # ---- 四条滑块：R / G / B / 灰度 ----
+        grey = (r + g + b) / 3.0 / 255.0
+        for name, _ry, _rh in self._cp_rows():
+            sx, sy, sw_, sh_ = self._cp_slider_rect(name)
+            if name == "R":
+                c0, c1, val, pos = (0, g / 255, b / 255), (1, g / 255, b / 255), r, r / 255
+            elif name == "G":
+                c0, c1, val, pos = (r / 255, 0, b / 255), (r / 255, 1, b / 255), g, g / 255
+            elif name == "B":
+                c0, c1, val, pos = (r / 255, g / 255, 0), (r / 255, g / 255, 1), b, b / 255
+            else:
+                c0, c1, val, pos = (0, 0, 0), (1, 1, 1), grey * 255.0, grey
+            self._draw_slider(cr, sx, sy, sw_, sh_, c0, c1, pos, name, val)
+
+        # ---- 常用色（选中的那个描一圈蓝）----
+        for c, sx, sy, sw_, sh_ in self._cp_swatch_rects():
+            col = _rgba(c)
+            cr.rectangle(sx, sy + 0.5, sw_, sh_)
+            cr.set_source_rgba(col[0], col[1], col[2], 1)
+            cr.fill_preserve()
+            cr.set_line_width(1)
+            cr.set_source_rgba(0.55, 0.55, 0.58, 1)
+            cr.stroke()
+            if c.upper() == (self.color or "").upper():
+                cr.set_line_width(2.5)
+                cr.set_source_rgba(0.04, 0.52, 1.0, 1)
+                cr.rectangle(sx, sy + 0.5, sw_, sh_)
+                cr.stroke()
+
+        # ---- 取色器 ----
+        kx, ky, kw, kh = self._cp_picker_rect()
+        cr.rectangle(kx, ky + 0.5, kw, kh)
+        cr.set_source_rgba(0.94, 0.94, 0.95, 1)
         cr.fill_preserve()
         cr.set_line_width(1)
         cr.set_source_rgba(0.55, 0.55, 0.58, 1)
         cr.stroke()
+        self._icon_picker(cr, kx, ky, kw, kh)
+
+        # ---- 当前色 + 色值 ----
+        # 提示文字放状态栏（面板下方那行字），这里只画色值，免得文字超出面板宽度。
+        hx, hy, _hw, _hh = self._cp_hint_rect()
+        cr.rectangle(hx, hy + 0.5, self.CP_SW, self.CP_SW)
+        cr.set_source_rgba(r / 255, g / 255, b / 255, 1)
+        cr.fill_preserve()
+        cr.set_line_width(1)
+        cr.set_source_rgba(0.35, 0.35, 0.38, 1)
+        cr.stroke()
         layout = PangoCairo.create_layout(cr)
-        layout.set_font_description(_font(11))
-        layout.set_text(f"当前 {self.color.upper()}", -1)
+        layout.set_font_description(_font(10))
+        layout.set_text(self.color.upper(), -1)
         cr.set_source_rgba(0.11, 0.11, 0.12, 1)
-        cr.move_to(px + pad + 28, ybase)
+        cr.move_to(hx + self.CP_SW + 6, hy + 3)
         PangoCairo.show_layout(cr, layout)
+        cr.restore()
+
+    @staticmethod
+    def _icon_picker(cr, x, y, w, h) -> None:
+        """取色器图标（细长吸管）。"""
+        cr.save()
+        cr.set_line_width(2)
+        cr.set_source_rgba(0.11, 0.11, 0.12, 1)
+        cr.move_to(x + w * 0.28, y + h * 0.76)
+        cr.line_to(x + w * 0.72, y + h * 0.28)
+        cr.stroke()
+        cr.arc(x + w * 0.75, y + h * 0.24, 2.2, 0, 6.2832)
+        cr.fill()
         cr.restore()
 
     # ------------------------------------------------------------ 文本

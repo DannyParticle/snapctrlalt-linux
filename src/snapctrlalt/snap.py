@@ -884,6 +884,23 @@ class App:
         g4.attach(mask_note, 1, r4[0], 1, 1)
         r4[0] += 1
 
+        g4b, r4b = add_section(page2, "截图行为")
+        chk_reselect = Gtk.CheckButton(
+            label="点选区外时重新框选（QQ 行为，默认关）")
+        chk_reselect.set_active(bool(self.cfg.get("reselect_on_empty", False)))
+        chk_reselect.set_tooltip_text(
+            "打开后：选好区域再点区域外，会清掉选区、重新拉框。"
+            "标注时鼠标划出选区就会触发，容易把选好的区域弄没；"
+            "关掉后选区不会再被误清，要重选按 C 或双击整屏。")
+        add_check(g4b, r4b, chk_reselect)
+        h4b = Gtk.Label(label="关掉它 = 选好的区域不会被误清；需要重选时按 C 或双击。")
+        h4b.set_halign(Gtk.Align.START)
+        h4b.set_xalign(0)
+        h4b.set_line_wrap(True)
+        h4b.get_style_context().add_class("dim-label")
+        g4b.attach(h4b, 1, r4b[0], 1, 1)
+        r4b[0] += 1
+
         g5, r5 = add_section(page2, "剪贴板")
         chk_primary = Gtk.CheckButton(label="同时写入 PRIMARY 选区（中键粘贴）")
         chk_primary.set_active(bool(self.cfg.get("copy_to_primary", False)))
@@ -1017,6 +1034,7 @@ class App:
             self.cfg["ui_scale"] = combo_ui.get_active_id() or "auto"
             self.cfg["toolbar_mode"] = combo_tb.get_active_id() or "canvas"
             self.cfg["toolbar_mask_debug"] = chk_mask_dbg.get_active()
+            self.cfg["reselect_on_empty"] = chk_reselect.get_active()
             self.cfg["show_tray"] = chk_tray.get_active()
             self.cfg["notify"] = chk_notify.get_active()
             self.cfg["copy_to_primary"] = chk_primary.get_active()
@@ -1148,8 +1166,13 @@ class App:
             o = self.overlay
             if o is not None and getattr(o, "_tb_pos", None):
                 bx, by, bw, bh = o._tb_pos
+                extra = ""
+                pr = getattr(o, "_palette_rect", None)
+                if getattr(o, "_palette_open", False) and pr:
+                    extra = (f" 取色面板=({pr[0]:.0f},{pr[1]:.0f},"
+                             f"{pr[2]:.0f}x{pr[3]:.0f})")
                 print(f"TBGEO 工具栏=({bx:.0f},{by:.0f},{bw:.0f}x{bh:.0f}) "
-                      f"画布={o.cr_w}x{o.cr_h} ui={o.ui_scale}", flush=True)
+                      f"画布={o.cr_w}x{o.cr_h} ui={o.ui_scale}{extra}", flush=True)
         return False
 
     def quit(self) -> None:
