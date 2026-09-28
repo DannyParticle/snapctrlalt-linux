@@ -1373,8 +1373,21 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
                 + sep * (len(groups) - 1)
 
         content_w = max(row_width(r) for r in rows)
-        total_w = pad * 2 + content_w
         bar_h = pad * 2 + row_h * len(rows) - ROW_GAP * us
+        place = getattr(self, "_tb_place", "auto")
+        want_vertical = place in ("left", "right")
+
+        # ---- 按**目标朝向**重建尺寸，而不是"需要时才翻转" ----
+        # 后者在 left→right（两边都是竖排）时不会重算，尺寸就串了：实测出现过
+        # _tb_pos 报 1204×152 却说是竖排、内容摆到条外。
+        if getattr(self, "_tb_vertical", False) != want_vertical:
+            self._transpose_buttons()
+        # 横排尺寸：内容两端各留出四角按钮的位置（否则首尾按钮被压住点不到）
+        inset = self._corner_size(content_w, bar_h, us)
+        total_w = pad * 2 + 2 * inset + content_w
+        if want_vertical:
+            # 竖排 = 把横排整体转置：宽高互换
+            total_w, bar_h = bar_h, total_w
 
         # ---- 定位：全部用画布坐标（= X11 根像素）----
         # 早期混用了两套单位：dw/dh 是「UI 单位下的窗口尺寸」，而 _to_disp 返回
@@ -1387,8 +1400,42 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             cx0, cy0 = self._to_disp(self.sel[0], self.sel[1])
             cx1, cy1 = self._to_disp(self.sel[2], self.sel[3])
 
-        # 尺寸即最终画布尺寸，直接钳制到可视范围（8 设计像素 × us）
+        # 贴左/右边时改竖排：宽高互换、按钮矩形转置
+        # （用 getattr 兜底：测试里有直接 __new__ 出来的实例，未必走过 __init__）
+        place = getattr(self, "_tb_place", "auto")
+        want_vertical = place in ("left", "right")
+        if want_vertical != getattr(self, "_tb_vertical", False):
+            self._transpose_buttons()
+            # 竖排 = 横排转置：宽高整体互换
+            total_w, bar_h = bar_h, total_w
+
+        # ---- 按摆放方式给 (bx, by) ----
+        # 设计上就是四种固定贴边 + 沿边滑动：滑块（用户手势）只改"沿边那个坐标"。
         margin = 8.0 * us
+        if place == "top":
+            bx = cx0 + (cx1 - cx0 - total_w) / 2.0
+            by = cy0 - bar_h - 10.0 * us
+        elif place == "bottom":
+            bx = cx0 + (cx1 - cx0 - total_w) / 2.0
+            by = cy1 + 10.0 * us
+        elif place == "left":
+            bx = cx0 - total_w - 10.0 * us
+            by = cy0 + (cy1 - cy0 - bar_h) / 2.0
+        elif place == "right":
+            bx = cx1 + 10.0 * us
+            by = cy0 + (cy1 - cy0 - bar_h) / 2.0
+        if place in ("top", "bottom", "left", "right"):
+            # 贴边时另一维放到选区中间；仍要保证整条在屏幕内
+            bx = min(max(bx, margin), max(margin, W - total_w - margin))
+            by = min(max(by, margin), max(margin, H - bar_h - margin))
+            self._tb_pos = (bx, by, total_w, bar_h)
+            self._tb_rows = len(rows)
+            self._buttons = self._place_buttons(rows, bx, by, total_w, row_h,
+                                                 pad, gap, sep, row_width,
+                                                 inset=inset, vertical=want_vertical,
+                                                 bar_h=bar_h)
+            self._sync_corner_buttons()
+            return
 
         # 水平：与选区左缘对齐（窄选区时工具栏比选区宽，居中会把两端顶出屏幕）
         bx = cx0
@@ -1408,10 +1455,43 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
 
         self._tb_pos = (bx, by, total_w, bar_h)
         self._tb_rows = len(rows)
-        # 逐排、逐组摆放；用内容居中，避免两排左右参差
+        self._buttons = self._place_buttons(rows, bx, by, total_w, row_h,
+                                            pad, gap, sep, row_width,
+                                            inset=inset, vertical=want_vertical,
+                                            bar_h=bar_h)
+        self._sync_corner_buttons()
+
+    @staticmethod
+    def _place_buttons(rows, bx, by, total_w, row_h, pad, gap, sep, row_width,
+                       inset: float = 0.0, vertical: bool = False,
+                       bar_h: float = 0.0) -> list:
+        """逐排、逐组摆放按钮；每排内容居中，两端避开四角按钮。
+
+        竖排时 ``_transpose_buttons`` 已经把每个按钮的宽高换过，所以"排"在这里
+        就是"列"：同一排的按钮沿 y 叠放，排与排沿 x 分开。
+        """
         all_buttons: list[_Button] = []
+        # 转置后：横排的"条长"= total_w（高已被换成总宽），竖排的条长 = bar_h
+        bar_len = total_w if not vertical else bar_h
         for ri, groups in enumerate(rows):
-            x = bx + (total_w - row_width(groups)) / 2.0
+            if vertical:
+                span = sum(sum(b.h for b in g) + gap * (len(g) - 1) for g in groups) \
+                    + sep * (len(groups) - 1)
+                # bar_len：竖排时整条的高 = 2*pad + content_h（content_h 已在
+                # _layout_toolbar 里含进 2*inset），这里用整条高减去两端留白
+                x = bx + pad + ri * row_h
+                y = by + pad + inset + (bar_len - 2 * (pad + inset) - span) / 2.0
+                for gi, g in enumerate(groups):
+                    for b in g:
+                        b.x, b.y = x, y
+                        y += b.h + gap
+                    y -= gap
+                    if gi != len(groups) - 1:
+                        y += sep
+                all_buttons.extend(b for g in groups for b in g)
+                continue
+            x = bx + pad + inset
+            x += (total_w - 2 * (pad + inset) - row_width(groups)) / 2.0
             y = by + pad + ri * row_h
             for gi, g in enumerate(groups):
                 for b in g:
@@ -1421,7 +1501,86 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
                 if gi != len(groups) - 1:
                     x += sep
             all_buttons.extend(b for g in groups for b in g)
-        self._buttons = all_buttons
+        del bar_len
+        return all_buttons
+
+    def _transpose_buttons(self) -> None:
+        """横排 ↔ 竖排：就地交换每个按钮的 x/y 与宽高。
+
+        不做"另算一套竖排坐标"，是为了让绘制与命中永远读同一份矩形 —— 这个项目
+        的坐标事故几乎都出在"两处各算一遍"上。交换后横排的两排变成两列。
+        """
+        for b in getattr(self, "_buttons", []):
+            b.x, b.y = b.y, b.x
+            b.w, b.h = b.h, b.w
+        self._tb_vertical = not getattr(self, "_tb_vertical", False)
+
+    def _place_toolbar(self, place: str, force: bool = False) -> None:
+        """把工具栏贴到某条边。``place`` 取 auto / top / bottom / left / right。
+
+        `force=True` 用于测试与"点四角按钮"：即使值没变也重排一次。
+        """
+        place = (place or "auto").lower()
+        if place not in ("auto", "top", "bottom", "left", "right"):
+            place = "auto"
+        if place == getattr(self, "_tb_place", "auto") and not force:
+            return
+        self._tb_place = place
+        cfg = getattr(self.app, "cfg", None)
+        if isinstance(cfg, dict) and place != "auto":
+            cfg["toolbar_place"] = place            # 记住这次的选择
+        self.status_cb({"top": "工具栏移到上边", "bottom": "工具栏移到下边",
+                        "left": "工具栏移到左边（竖排）",
+                        "right": "工具栏移到右边（竖排）",
+                        "auto": "工具栏跟随选区"}.get(place, ""))
+        self._layout_toolbar()
+        self._redraw()
+
+    def _tb_drag_begin(self, x: float, y: float) -> bool:
+        """在工具栏的空白处按下 → 开始沿边拖动。返回 True 表示已接管这次按下。"""
+        if self._tb_pos is None or not self._buttons:
+            return False
+        bx, by, bw, bh = self._tb_pos
+        if not (bx <= x <= bx + bw and by <= y <= by + bh):
+            return False
+        if self._button_at(x, y) is not None:
+            return False                     # 落在按钮上：交给按钮
+        self._tb_drag = {"grab": (x, y), "orig": (bx, by)}
+        self.status_cb("拖动工具栏：贴边可以上下/左右滑动")
+        return True
+
+    def _tb_drag_move(self, x: float, y: float) -> None:
+        """沿边滑动：只改"沿边那个坐标"，垂直方向仍贴着原来的边。
+
+        贴左/右边 → 只改 y；贴上/下边 → 只改 x；auto → 两维都跟手（自由摆放）。
+        """
+        d = self._tb_drag
+        if not d or self._tb_pos is None:
+            return
+        gx, gy = d["grab"]
+        ox, oy = d["orig"]
+        nx, ny = ox + (x - gx), oy + (y - gy)
+        if self._tb_place in ("left", "right"):
+            nx = ox
+        elif self._tb_place in ("top", "bottom"):
+            ny = oy
+        self._clamp_tb_pos(nx, ny)
+        self._redraw()
+
+    def _clamp_tb_pos(self, bx: float, by: float) -> None:
+        """把工具栏整条夹进可视区，然后写回 ``_tb_pos``（按钮跟着平移）。"""
+        if self._tb_pos is None:
+            return
+        _ox, _oy, bw, bh = self._tb_pos
+        us = self.ui_scale
+        margin = 8.0 * us
+        bx = min(max(bx, margin), max(margin, self.cr_w - bw - margin))
+        by = min(max(by, margin), max(margin, self.cr_h - bh - margin))
+        ox, oy = bx - self._tb_pos[0], by - self._tb_pos[1]
+        for b in self._buttons:
+            b.x += ox
+            b.y += oy
+        self._tb_pos = (bx, by, bw, bh)
 
     def _draw_toolbar(self, cr, dw, dh) -> None:
         """画工具栏。
@@ -1471,44 +1630,108 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         cr.stroke()
         cr.restore()
 
-        for b in self._buttons:
-            active = (b.action == "tool" and b.data == self.tool)
-            hover = self._hover is b
-            if active or hover:
-                cr.save()
-                self._rounded_rect(cr, b.x + 1, b.y + 1, b.w - 2, b.h - 2, 6)
-                cr.set_source_rgba(*(ACTIVE_BG if active else HOVER_BG))
-                cr.fill()
-                cr.restore()
-            if b.kind == "swatch":
-                cr.save()
-                col = _rgba(b.data)
-                cr.rectangle(b.x + 4, b.y + 6, b.w - 8, b.h - 12)
-                cr.set_source_rgba(col[0], col[1], col[2], 1)
-                cr.fill_preserve()
-                cr.set_line_width(1)
-                if b.data == self.color:
-                    cr.set_source_rgba(0.04, 0.52, 1.0, 1)
-                    cr.set_line_width(2.4)
-                else:
-                    cr.set_source_rgba(0.55, 0.55, 0.58, 1)
-                cr.stroke()
-                cr.restore()
-                continue
-            if b.kind == "colorwheel":
-                # 当前颜色圆环
-                cr.save()
-                col = _rgba(self.color)
-                cr.set_line_width(3)
-                cr.set_source_rgba(col[0], col[1], col[2], 1)
-                cr.arc(b.x + b.w / 2.0, b.y + b.h / 2.0, b.w / 2.0 - 5, 0, 2 * math.pi)
-                cr.stroke()
-                cr.restore()
-                continue
-            size = b.w - 8
+        for b in self._buttons + self._corner_buttons():
+            self._paint_button(cr, b)
+
+    def _corner_buttons(self) -> list[_Button]:
+        """四角的「换个边」按钮：矩形由 _layout_toolbar 算好后放在这里。"""
+        return getattr(self, "_tb_corners", [])
+
+    @staticmethod
+    def _corner_size(bar_len: float, cross: float, us) -> float:
+        """四角按钮边长：跟着"沿条方向"的尺寸走（横排=整条宽，竖排=整条高）。
+
+        这样平板上手指也点得到，又不会把整条撑得太长（用固定像素会在竖排时
+        相对变得很大，把中间那列按钮压住）。
+        """
+        # 半边长 = 条长的 4.5%（最小 7 设计像素）：四个角各占一个，互不重叠
+        return 2.0 * max(6.0 * us, bar_len * 0.028)
+
+    @staticmethod
+    def _corner_rects(bx, by, bw, bh, us) -> list[tuple]:
+        """四个角上「换个边」按钮的矩形（画布坐标）。
+
+        取 min(宽,高)*0.34 作半边长：贴边时那两个用不到的角落因此变成功能入口，
+        而且不会压住主按钮（主按钮都排在条的另一侧）。
+        """
+        side = ShotOverlay._corner_size(bw, bh, us)   # 边长
+        return [
+            ("top", bx, by, side, side, "把工具栏移到上边（横排）"),
+            ("bottom", bx + bw - side, by + bh - side, side, side,
+             "把工具栏移到下边（横排）"),
+            ("left", bx, by + bh - side, side, side, "把工具栏移到左边（竖排）"),
+            ("right", bx + bw - side, by, side, side, "把工具栏移到右边（竖排）"),
+        ]
+
+    def _sync_corner_buttons(self) -> None:
+        """按当前工具栏矩形重建四角按钮（拖动后也要跟着走）。"""
+        if self._tb_pos is None:
+            self._tb_corners = []
+            return
+        bx, by, bw, bh = self._tb_pos
+        self._tb_corners = [
+            _Button("place", x, y, w, h, tip, "place", which)
+            for which, x, y, w, h, tip in self._corner_rects(bx, by, bw, bh, self.ui_scale)
+        ]
+
+    def _paint_button(self, cr, b: _Button) -> None:
+        """画一个按钮（主按钮与四角按钮共用）。"""
+        active = (b.action == "tool" and b.data == self.tool)
+        hover = self._hover is b
+        if active or hover:
             cr.save()
-            cr.translate(b.x + (b.w - size) / 2.0, b.y + (b.h - size) / 2.0)
-            draw_icon(cr, b.kind, size, ICON_ACTIVE if active else ICON_COLOR)
+            self._rounded_rect(cr, b.x + 1, b.y + 1, b.w - 2, b.h - 2, 6)
+            cr.set_source_rgba(*(ACTIVE_BG if active else HOVER_BG))
+            cr.fill()
+            cr.restore()
+        if b.kind == "swatch":
+            cr.save()
+            col = _rgba(b.data)
+            cr.rectangle(b.x + 4, b.y + 6, b.w - 8, b.h - 12)
+            cr.set_source_rgba(col[0], col[1], col[2], 1)
+            cr.fill_preserve()
+            cr.set_line_width(1)
+            if b.data == self.color:
+                cr.set_source_rgba(0.04, 0.52, 1.0, 1)
+                cr.set_line_width(2.4)
+            else:
+                cr.set_source_rgba(0.55, 0.55, 0.58, 1)
+            cr.stroke()
+            cr.restore()
+            return
+        if b.kind == "colorwheel":
+            # 当前颜色圆环
+            cr.save()
+            col = _rgba(self.color)
+            cr.set_line_width(3)
+            cr.set_source_rgba(col[0], col[1], col[2], 1)
+            cr.arc(b.x + b.w / 2.0, b.y + b.h / 2.0, b.w / 2.0 - 5, 0, 2 * math.pi)
+            cr.stroke()
+            cr.restore()
+            return
+        size = b.w - 8
+        cr.save()
+        cr.translate(b.x + (b.w - size) / 2.0, b.y + (b.h - size) / 2.0)
+        draw_icon(cr, b.kind, size, ICON_ACTIVE if active else ICON_COLOR)
+        cr.restore()
+        if b.action == "place":
+            # 四角按钮：画面一个朝内的小三角，指哪贴哪
+            cr.save()
+            cr.set_source_rgba(0.35, 0.35, 0.38, 0.95)
+            cx, cy = b.x + b.w / 2.0, b.y + b.h / 2.0
+            tri = min(b.w, b.h) * 0.22
+            pts = {
+                "top": ((cx, cy - tri), (cx - tri, cy + tri * 0.7), (cx + tri, cy + tri * 0.7)),
+                "bottom": ((cx, cy + tri), (cx - tri, cy - tri * 0.7), (cx + tri, cy - tri * 0.7)),
+                "left": ((cx - tri, cy), (cx + tri * 0.7, cy - tri), (cx + tri * 0.7, cy + tri)),
+                "right": ((cx + tri, cy), (cx - tri * 0.7, cy - tri), (cx - tri * 0.7, cy + tri)),
+            }.get(b.data)
+            if pts:
+                cr.move_to(*pts[0])
+                cr.line_to(*pts[1])
+                cr.line_to(*pts[2])
+                cr.close_path()
+                cr.fill()
             cr.restore()
 
     def _build_toolbar_surface(self, bx, by, bw, bh) -> cairo.Surface:
@@ -1519,7 +1742,13 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         return surf
 
     def _button_at(self, x, y) -> _Button | None:
-        """x, y 与按钮矩形都是画布坐标（ui_scale 已在布局时算进尺寸）。"""
+        """x, y 与按钮矩形都是画布坐标（ui_scale 已在布局时算进尺寸）。
+
+        四角按钮先判：它们很小，被主按钮的悬停/点击抢走就没法用了。
+        """
+        for b in self._corner_buttons():
+            if b.hit(x, y):
+                return b
         for b in self._buttons:
             if b.hit(x, y):
                 return b
@@ -1588,6 +1817,10 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
                 if h != self._palette_hover:
                     self._palette_hover = h
                     self._redraw()
+        if getattr(self, "_tb_drag", None) is not None:
+            x, y = self._pos(event)
+            self._tb_drag_move(x, y)
+            return True
         self._verify_pointer(event)
         x, y = self._pos(event)
         self._cursor = (x, y)
@@ -1732,6 +1965,12 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         return True
 
     def _on_release(self, _w, event) -> bool:
+        if getattr(self, "_tb_drag", None) is not None and event.button == 1:
+            self._tb_drag = None
+            self._sync_corner_buttons()
+            self.status_cb("工具栏位置已调整 · 点四角可换边")
+            self._redraw()
+            return True
         if self._palette_open and event.button == 1:
             if self._cp_row:
                 self._cp_release()
@@ -1917,6 +2156,8 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             self.save()
         elif a == "editor":
             self._switch_mode("editor")
+        elif a == "place":
+            self._place_toolbar(b.data)
         elif a == "pin":
             self.pin()
         elif a == "cancel":

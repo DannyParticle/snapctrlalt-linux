@@ -720,6 +720,103 @@ def test_toolbar_mode_switch_button(app: FakeApp) -> None:
     ed.win.destroy()
 
 
+def test_toolbar_placements_and_drag(app: FakeApp) -> None:
+    """工具栏要能贴四条边，并且能沿边拖动（教师白板板书那种用法）。
+
+    不变量（每条边都要成立）：
+      * 工具栏整条在屏幕内；
+      * 每个按钮都能点到（命中测试与绘制用同一份矩形）；
+      * 贴左/右边时是**竖排**（bar_h > bar_w），贴上/下边时是横排；
+      * 沿边拖动后仍然满足上面三条，且不会跑出可视区。
+    """
+    print("\n[24] 工具栏四边摆放 + 沿边拖动")
+    W, H = 2880, 1800
+    sel = (1160, 700, 1720, 900)
+    for place in ("top", "bottom", "left", "right", "free"):
+        o = _overlay_for(app, sel)
+        o._place_toolbar(place, force=True)
+        bx, by, bw, bh = o._tb_pos
+        inside = bx >= 0 and by >= 0 and bx + bw <= W and by + bh <= H
+        check(f"{place}：整条在屏幕内", inside,
+              f"{bx:.0f},{by:.0f}..{bx + bw:.0f},{by + bh:.0f}")
+        missed = [b.kind for b in o._buttons
+                  if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
+        check(f"{place}：{len(o._buttons)} 个按钮都可点", not missed, str(missed[:4]))
+        vertical = bh > bw
+        check(f"{place}：朝向{'竖排' if place in ('left', 'right') else '横排'}",
+              vertical == (place in ("left", "right")), f"{bw:.0f}×{bh:.0f}")
+        # 四个角上的「换个边」按钮必须存在且可点
+        corners = [b for b in o._corner_buttons() if b.action == "place"]
+        check(f"{place}：四个角按钮齐备", len(corners) == 4, str(len(corners)))
+        missed_c = [b.data for b in corners
+                    if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
+        check(f"{place}：四角按钮都可点", not missed_c, str(missed_c))
+        o.win.destroy()
+
+    # 连续换边（left→right 都是竖排）：尺寸不能串（实测出现过 1204×152 却说是竖排）
+    o = _overlay_for(app, sel)
+    seq = []
+    for place in ("left", "right", "left", "top", "auto"):
+        o._place_toolbar(place, force=True)
+        bx, by, bw, bh = o._tb_pos
+        ok_shape = (bh > bw) == (place in ("left", "right"))
+        missed = [b.kind for b in o._buttons
+                  if o._button_at(b.x + b.w / 2, b.y + b.h / 2) is not b]
+        seq.append((place, round(bw), round(bh), ok_shape and not missed))
+    check("连续换边：朝向与可点性始终正确",
+          all(ok for *_rest, ok in seq), str(seq))
+    o.win.destroy()
+
+    # 沿边拖动：贴右边后把工具栏上下拖，位置要跟着动，但不能滑出屏幕
+    o = _overlay_for(app, sel)
+    o._place_toolbar("right", force=True)
+    bx, by, bw, bh = o._tb_pos
+    o._tb_drag = {"grab": (bx + bw / 2, by + 20), "orig": (bx, by)}
+    o._tb_drag_move(bx + bw / 2, by + 20 + 500)
+    bx2, by2, bw2, bh2 = o._tb_pos
+    moved = abs(by2 - by)
+    check("沿右边拖动：纵向位置跟着动", moved > 100, f"{by:.0f} → {by2:.0f}")
+    check("沿右边拖动：没越出屏幕", by2 >= 0 and by2 + bh2 <= H,
+          f"{by2:.0f}..{by2 + bh2:.0f}")
+    check("沿右边拖动：横向不变（仍贴边）", abs(bx2 - bx) < 2, f"{bx:.0f} → {bx2:.0f}")
+    o._tb_drag_move(bx + bw / 2, by - 5000)
+    bx3, by3, _bw3, bh3 = o._tb_pos
+    check("拖到屏幕外：被钳回可视区", by3 >= 0 and by3 + bh3 <= H,
+          f"{by3:.0f}..{by3 + bh3:.0f}")
+    o.win.destroy()
+
+
+def test_editor_toolbar_placement(app: FakeApp) -> None:
+    """方案③（编辑器窗口）的工具栏也要能贴四条边，并且竖排时可点。"""
+    print("\n[25] 编辑器窗口工具栏四边摆放")
+    import snapctrlalt.toolbar as tb_mod  # noqa: PLC0415
+    from PIL import Image as _I  # noqa: PLC0415
+
+    ed = tb_mod.EditorWindow(_I.new("RGB", (900, 600), (18, 24, 32)),
+                             on_commit=lambda *a: None, ui_scale=2.0, app=app)
+    for place in ("top", "bottom", "left", "right"):
+        ed.set_placement(place)
+        check(f"{place}：朝向与摆放一致",
+              ed.ts.vertical == (place in ("left", "right")),
+              f"vertical={ed.ts.vertical}")
+        missed = [b.kind for b in ed.ts.buttons
+                  if ed.ts.at(b.x + b.w / 2, b.y + b.h / 2) is not b]
+        check(f"{place}：{len(ed.ts.buttons)} 个按钮都可点", not missed, str(missed[:4]))
+        check(f"{place}：工具栏区域尺寸跟着朝向走",
+              (int(ed.toolbar_area.get_size_request()[0]) > 0),
+              str(ed.toolbar_area.get_size_request()))
+        corners = [b for b in ed.ts.corner_buttons if b.action == "place"]
+        check(f"{place}：四角按钮齐备", len(corners) == 4, str(len(corners)))
+        went = []
+        for c in corners:
+            ed.ts.hover = None
+            ed._apply_action(c)
+            went.append(ed.placement)
+        check(f"{place}：点四角按钮会切到对应边",
+              went == ["top", "bottom", "left", "right"], str(went))
+    ed.win.destroy()
+
+
 def test_construction_smoke(app: FakeApp) -> None:
     """覆盖层必须能真的构造出来（真窗口，非离屏）。
 
@@ -803,8 +900,10 @@ def test_editor_window(app: FakeApp) -> None:
                                   ui_scale=2.0, icon_painter=draw_icon)
         sizes.append((round(ed2.ts.bar_w), round(ed2.ts.bar_h)))
         ed2.destroy()
-    check("工具栏尺寸与截图尺寸无关（都是 1204×152）",
-          len(set(sizes)) == 1 and sizes[0] == (1204, 152), str(sizes))
+    # 尺寸只由 ui_scale 决定（现在条内还给四角按钮留了位置，所以取基准值比较）
+    want = (round(tb_mod.ToolbarState(2.0).bar_w), round(tb_mod.ToolbarState(2.0).bar_h))
+    check(f"工具栏尺寸与截图尺寸无关（都是 {want[0]}×{want[1]}）",
+          len(set(sizes)) == 1 and sizes[0] == want, f"{sizes} vs {want}")
 
 
 def test_toolbar_follows_selection(app: FakeApp) -> None:
@@ -969,7 +1068,8 @@ def main() -> int:
                test_toolbar_follows_selection, test_scale_reconciliation,
                test_modal_freezes_overlay, test_cancel,
                test_color_panel_inside_toolbar, test_color_panel_drag,
-               test_reselect_switch, test_toolbar_mode_switch_button):
+               test_reselect_switch, test_toolbar_mode_switch_button,
+               test_toolbar_placements_and_drag, test_editor_toolbar_placement):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

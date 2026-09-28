@@ -1,3 +1,20 @@
+snapctrlalt (1.4.0) unstable; urgency=medium
+
+  * The toolbar can now be attached to any of the four sides: the small
+    triangles in its corners move it to the top/bottom (horizontal) or the
+    left/right (vertical, the whole bar is transposed).  The choice is
+    remembered in the config; "auto" (follow the selection) is still default.
+  * Dragging the toolbar by its empty area slides it along the edge it is
+    attached to, always clamped inside the screen -- the whiteboard-style
+    behaviour asked for.
+  * The editor window (layout 3) uses a Gtk.Grid now: same four sides, with
+    the action buttons moving to the opposite edge.
+  * Two real bugs fixed on the way: left<->right switching reused stale bar
+    dimensions (1204x152 while claiming to be vertical), and the corner
+    buttons were large enough to cover the first/last toolbar buttons.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 08:10:00 +0800
+
 snapctrlalt (1.3.12) unstable; urgency=medium
 
   * The toolbar of both layouts (canvas and editor) now has a one-click

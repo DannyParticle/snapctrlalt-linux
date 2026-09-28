@@ -1213,12 +1213,21 @@ class App:
             o = self.overlay
             if o is not None and getattr(o, "_tb_pos", None):
                 bx, by, bw, bh = o._tb_pos
+                # 一行给全：矩形 + 摆放 + 朝向 + 四角按钮坐标。
+                # 分两行打印过 —— 核验脚本先等到第一行就返回，第二行还没落盘，
+                # "四角按钮"读成空，白跑了好几轮。
                 extra = ""
                 pr = getattr(o, "_palette_rect", None)
                 if getattr(o, "_palette_open", False) and pr:
                     extra = (f" 取色面板=({pr[0]:.0f},{pr[1]:.0f},"
                              f"{pr[2]:.0f}x{pr[3]:.0f})")
+                corners = " ".join(
+                    f"{c.data}:{c.x + c.w / 2:.0f},{c.y + c.h / 2:.0f}"
+                    for c in (getattr(o, "_tb_corners", []) or []))
                 print(f"TBGEO 工具栏=({bx:.0f},{by:.0f},{bw:.0f}x{bh:.0f}) "
+                      f"摆放={getattr(o, '_tb_place', 'auto')} "
+                      f"竖排={int(bool(getattr(o, '_tb_vertical', False)))} "
+                      f"四角=[{corners}] "
                       f"画布={o.cr_w}x{o.cr_h} ui={o.ui_scale}{extra}", flush=True)
         return False
 

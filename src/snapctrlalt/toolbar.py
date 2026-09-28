@@ -144,7 +144,12 @@ class ToolbarState:
         self.hover: Button | None = None
         self.bar_w = 0.0
         self.bar_h = 0.0
+        # 竖排（贴左/右边时用）：排布仍按"横向"算，只是把每个按钮的 x/y 互换、
+        # 整条的宽高互换。这样绘制与命中共用同一份矩形，不会出现两套算法打架。
+        self.vertical = False
         self._build()
+        self.corner_buttons: list[Button] = []
+        self._build_corners()
 
     # ---------------------------------------------------------------- 排布
 
@@ -178,13 +183,16 @@ class ToolbarState:
                 sum(sum(b.w for b in g) + gap * (len(g) - 1) for g in groups)
                 + sep * (len(groups) - 1))
 
-        self.bar_w = pad * 2 + max(row_widths or [0.0])
+        content_w = max(row_widths or [0.0])
         self.bar_h = pad * 2 + row_h * len(rows_groups) - ROW_GAP * us
+        # 四角按钮占着两端，内容居中时要避开（否则首尾按钮点不到）
+        self.inset = 2.0 * max(6.0 * us, content_w * 0.028)
+        self.bar_w = pad * 2 + 2 * self.inset + content_w
 
         # 逐排、逐组摆放；每排内容在条内居中，两排不会左右参差
         self.rows = []
         for ri, groups in enumerate(rows_groups):
-            x = (self.bar_w - row_widths[ri]) / 2.0
+            x = pad + self.inset + (content_w - row_widths[ri]) / 2.0
             y = pad + ri * row_h
             for gi, g in enumerate(groups):
                 for b in g:
@@ -196,9 +204,47 @@ class ToolbarState:
             self.rows.append([b for g in groups for b in g])
         self.buttons = [b for r in self.rows for b in r]
 
+    # ---------------------------------------------------------------- 旋转
+
+    def set_vertical(self, vertical: bool) -> None:
+        """切成竖排 / 横排。就地交换每个按钮的 x/y 与宽高，并交换整条宽高。"""
+        if bool(vertical) == self.vertical or not self.buttons:
+            return
+        self.vertical = bool(vertical)
+        for b in self.buttons:
+            b.x, b.y = b.y, b.x
+            b.w, b.h = b.h, b.w
+        self.bar_w, self.bar_h = self.bar_h, self.bar_w
+        self._build_corners()
+        self.hover = None
+
+    def _build_corners(self) -> None:
+        """四个角的「换个边」按钮：点一下就贴到对应的边。
+
+        尺寸取 min(0.34*宽, 0.34*高)，四个角各占一个，互不重叠；吸附到边的那些
+        按钮都用不上的角落因此变成了功能入口（教师白板工具栏的常见做法）。
+        """
+        base = max(6.0 * self.ui_scale, self.bar_w * 0.028)
+        side = 2.0 * base                     # 边长：四个角各占一个，互不重叠
+        w, h = self.bar_w, self.bar_h
+        specs = [
+            ("place", "把工具栏移到上边（横排）", "place", "top", 0.0, 0.0),
+            ("place", "把工具栏移到下边（横排）", "place", "bottom", w - side, h - side),
+            ("place", "把工具栏移到左边（竖排）", "place", "left", 0.0, h - side),
+            ("place", "把工具栏移到右边（竖排）", "place", "right", w - side, 0.0),
+        ]
+        self.corner_buttons = [
+            Button(kind, x, y, side, side, tip, action, data)
+            for kind, tip, action, data, x, y in specs
+        ]
+
     # ---------------------------------------------------------------- 命中
 
     def at(self, x: float, y: float) -> Button | None:
+        # 四角按钮先判：它们只有一小块，不该被主按钮的悬停/点击盖住
+        for b in self.corner_buttons:
+            if b.hit(x, y):
+                return b
         for b in self.buttons:
             if b.hit(x, y):
                 return b
@@ -208,12 +254,12 @@ class ToolbarState:
         return bx <= x <= bx + self.bar_w and by <= y <= by + self.bar_h
 
     def move_to(self, bx: float, by: float) -> None:
-        """把整条工具栏平移到 ``(bx, by)``。"""
+        """把整条工具栏平移到 ``(bx, by)``（含四角按钮）。"""
         if not self.buttons:
             return
         ox = bx - self.buttons[0].x
         oy = by - self.buttons[0].y
-        for b in self.buttons:
+        for b in self.buttons + self.corner_buttons:
             b.x += ox
             b.y += oy
 
@@ -256,6 +302,15 @@ def _rounded_rect(cr: cairo.Context, x, y, w, h, r) -> None:
     cr.close_path()
 
 
+def _btn_rect(state: ToolbarState, b: Button):
+    """按钮在"当前朝向"下的矩形。
+
+    竖排时 ``set_vertical`` 已经把每个按钮的 x/y、宽高换过了，这里直接用；
+    之所以还留一层，是为了让绘制代码有一段统一的读法（以后要再改朝向只动这里）。
+    """
+    return b.x, b.y, b.w, b.h
+
+
 def paint_bar(cr: cairo.Context, state: ToolbarState, bx: float, by: float,
               tool: str, color: str, icon_painter) -> None:
     """把工具栏画到当前上下文。
@@ -282,30 +337,40 @@ def paint_bar(cr: cairo.Context, state: ToolbarState, bx: float, by: float,
     cr.set_source_rgba(*SEP_COLOR)
     cr.set_line_width(max(1.0, us))
     for row in state.rows:
-        btns = sorted(row, key=lambda b: b.x)
+        btns = sorted(row, key=lambda b: b.y if state.vertical else b.x)
         for i in range(len(btns) - 1):
-            gap_px = btns[i + 1].x - (btns[i].x + btns[i].w)
+            if state.vertical:
+                gap_px = btns[i + 1].y - (btns[i].y + btns[i].h)
+            else:
+                gap_px = btns[i + 1].x - (btns[i].x + btns[i].w)
             if gap_px > 2 * us:
-                sx = btns[i].x + btns[i].w + gap_px / 2.0
-                top = btns[i].y + 6 * us
-                cr.move_to(sx, top)
-                cr.line_to(sx, top + btns[i].h - 12 * us)
+                if state.vertical:
+                    sy = btns[i].y + btns[i].h + gap_px / 2.0
+                    left = btns[i].x + 6 * us
+                    cr.move_to(left, sy)
+                    cr.line_to(left + btns[i].w - 12 * us, sy)
+                else:
+                    sx = btns[i].x + btns[i].w + gap_px / 2.0
+                    top = btns[i].y + 6 * us
+                    cr.move_to(sx, top)
+                    cr.line_to(sx, top + btns[i].h - 12 * us)
     cr.stroke()
     cr.restore()
 
-    for b in state.buttons:
+    for b in list(state.buttons) + list(getattr(state, "corner_buttons", [])):
+        bxx, byy, bww, bhh = _btn_rect(state, b)
         active = (b.action == "tool" and b.data == tool)
         hover = state.hover is b
         if active or hover:
             cr.save()
-            _rounded_rect(cr, b.x + us, b.y + us, b.w - 2 * us, b.h - 2 * us, 6 * us)
+            _rounded_rect(cr, bxx + us, byy + us, bww - 2 * us, bhh - 2 * us, 6 * us)
             cr.set_source_rgba(*(ACTIVE_BG if active else HOVER_BG))
             cr.fill()
             cr.restore()
         if b.kind == "swatch":
             cr.save()
             col = _rgba(b.data)
-            cr.rectangle(b.x + 4 * us, b.y + 6 * us, b.w - 8 * us, b.h - 12 * us)
+            cr.rectangle(bxx + 4 * us, byy + 6 * us, bww - 8 * us, bhh - 12 * us)
             cr.set_source_rgba(col[0], col[1], col[2], 1)
             cr.fill_preserve()
             if b.data == color:
@@ -322,14 +387,44 @@ def paint_bar(cr: cairo.Context, state: ToolbarState, bx: float, by: float,
             col = _rgba(color)
             cr.set_line_width(3 * us)
             cr.set_source_rgba(col[0], col[1], col[2], 1)
-            cr.arc(b.x + b.w / 2.0, b.y + b.h / 2.0, b.w / 2.0 - 5 * us, 0, 6.283185307179586)
+            cr.arc(bxx + bww / 2.0, byy + bhh / 2.0, bww / 2.0 - 5 * us, 0, 6.283185307179586)
             cr.stroke()
             cr.restore()
             continue
-        size = b.w - 8 * us
+        size = bww - 8 * us
         cr.save()
-        cr.translate(b.x + (b.w - size) / 2.0, b.y + (b.h - size) / 2.0)
+        cr.translate(bxx + (bww - size) / 2.0, byy + (bhh - size) / 2.0)
         icon_painter(cr, b.kind, size, ICON_ACTIVE if active else ICON_COLOR)
+        cr.restore()
+
+    # 四角「换个边」按钮：一个朝内的小三角，指哪贴哪
+    for b in getattr(state, "corner_buttons", []):
+        bxx, byy, bww, bhh = _btn_rect(state, b)
+        if state.hover is b:
+            cr.save()
+            _rounded_rect(cr, bxx + us, byy + us, bww - 2 * us, bhh - 2 * us, 6 * us)
+            cr.set_source_rgba(*HOVER_BG)
+            cr.fill()
+            cr.restore()
+        cr.save()
+        cr.set_source_rgba(0.35, 0.35, 0.38, 0.95)
+        cx, cy = bxx + bww / 2.0, byy + bhh / 2.0
+        tri = min(bww, bhh) * 0.22
+        which = b.data
+        # 指向"要贴的那条边"：上边朝上、下边朝下、左边朝左、右边朝右
+        if which == "top":
+            pts = ((cx, cy - tri), (cx - tri, cy + tri * 0.7), (cx + tri, cy + tri * 0.7))
+        elif which == "bottom":
+            pts = ((cx, cy + tri), (cx - tri, cy - tri * 0.7), (cx + tri, cy - tri * 0.7))
+        elif which == "left":
+            pts = ((cx - tri, cy), (cx + tri * 0.7, cy - tri), (cx + tri * 0.7, cy + tri))
+        else:
+            pts = ((cx + tri, cy), (cx - tri * 0.7, cy - tri), (cx - tri * 0.7, cy + tri))
+        cr.move_to(*pts[0])
+        cr.line_to(*pts[1])
+        cr.line_to(*pts[2])
+        cr.close_path()
+        cr.fill()
         cr.restore()
 
 
@@ -843,12 +938,11 @@ class EditorWindow(AnnotationRenderer):
         self.win.connect("delete-event", lambda *_: (self.cancel(), True)[1])
         self.win.connect("key-press-event", self._on_key)
 
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.win.add(outer)
+        self.outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.win.add(self.outer)
 
-        # ---- 顶部工具栏（真正的 GTK 控件，随窗口布局）----
+        # ---- 工具栏（真正的 GTK 控件，随窗口布局）----
         self.toolbar_area = Gtk.DrawingArea()
-        self.toolbar_area.set_size_request(int(self.ts.bar_w), int(self.ts.bar_h))
         self.toolbar_area.add_events(
             Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK
             | Gdk.EventMask.LEAVE_NOTIFY_MASK)
@@ -857,14 +951,11 @@ class EditorWindow(AnnotationRenderer):
         self.toolbar_area.connect("motion-notify-event", self._on_toolbar_motion)
         self.toolbar_area.connect("leave-notify-event", self._on_toolbar_leave)
         self.toolbar_area.set_can_focus(False)
-        # 工具栏放进横向滚动容器：窗口比工具栏窄时也不会被裁掉两端
-        # （默认宽度是照着工具栏算的，但用户可能把窗口拖窄，或屏幕本来就小）
-        bar_scroll = Gtk.ScrolledWindow()
-        bar_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        bar_scroll.set_margin_top(6)
-        bar_scroll.set_margin_bottom(6)
-        bar_scroll.add_with_viewport(self.toolbar_area)
-        outer.pack_start(bar_scroll, False, False, 0)
+        # 放进滚动容器：窗口比工具栏窄（或矮）时也不会被裁掉两端
+        self.bar_scroll = Gtk.ScrolledWindow()
+        self.bar_scroll.set_margin_top(6)
+        self.bar_scroll.set_margin_bottom(6)
+        self.bar_scroll.add_with_viewport(self.toolbar_area)
 
         # ---- 中间画布 ----
         self.canvas = Gtk.DrawingArea()
@@ -879,34 +970,89 @@ class EditorWindow(AnnotationRenderer):
         self.canvas.connect("button-release-event", self._on_canvas_release)
         self.canvas.connect("motion-notify-event", self._on_canvas_motion)
         self.canvas.connect("key-press-event", self._on_key)
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.add_with_viewport(self.canvas)
-        outer.pack_start(scroller, True, True, 0)
+        self.canvas_scroll = Gtk.ScrolledWindow()
+        self.canvas_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.canvas_scroll.add_with_viewport(self.canvas)
 
-        # ---- 底部按钮 ----
-        bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        bottom.set_margin_top(6)
-        bottom.set_margin_bottom(8)
-        bottom.set_margin_start(10)
-        bottom.set_margin_end(10)
-        outer.pack_start(bottom, False, False, 0)
-        hint = Gtk.Label(label="滚轮缩放 · Ctrl+Z 撤销 · Enter 完成")
+        # ---- 底部按钮（放在工具栏**对面**那条边）----
+        self.bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.bottom.set_margin_top(6)
+        self.bottom.set_margin_bottom(8)
+        self.bottom.set_margin_start(10)
+        self.bottom.set_margin_end(10)
+        hint = Gtk.Label(label="滚轮缩放 · Ctrl+Z 撤销 · Enter 完成 · 点工具栏四角可换边")
         hint.set_halign(Gtk.Align.START)
         hint.get_style_context().add_class("dim-label")
-        bottom.pack_start(hint, True, True, 0)
+        self.bottom.pack_start(hint, True, True, 0)
         btn_copy = Gtk.Button(label="复制到剪贴板")
         btn_save = Gtk.Button(label="另存为…")
         btn_cancel = Gtk.Button(label="取消")
         btn_close = Gtk.Button(label="完成")
         btn_close.get_style_context().add_class("suggested-action")
         for b in (btn_copy, btn_save, btn_cancel):
-            bottom.pack_start(b, False, False, 0)
-        bottom.pack_end(btn_close, False, False, 0)
+            self.bottom.pack_start(b, False, False, 0)
+        self.bottom.pack_end(btn_close, False, False, 0)
         btn_copy.connect("clicked", lambda _b: self.commit("copy"))
         btn_save.connect("clicked", lambda _b: self.commit("save"))
         btn_cancel.connect("clicked", lambda _b: self.cancel())
         btn_close.connect("clicked", lambda _b: self.commit("copy"))
+
+        # ---- 摆放：默认工具栏在上、按钮在下；点四角小三角换边 ----
+        self.placement = "top"
+        self.grid = Gtk.Grid()
+        self.outer.pack_start(self.grid, True, True, 0)
+        self._apply_layout()
+
+    # ------------------------------------------------------------ 摆放
+
+    def set_placement(self, place: str) -> None:
+        """把工具栏贴到上/下/左/右某条边（用户点四角的小三角）。
+
+        * 贴上/下：工具栏横排、底部按钮放到对面那条边；
+        * 贴左/右：工具栏**竖排**（``ToolbarState.set_vertical`` 就地转置每个按钮的
+          矩形，绘制与命中共用同一份），底部按钮挪到另一侧。
+        """
+        place = (place or "top").lower()
+        if place not in ("top", "bottom", "left", "right"):
+            place = "top"
+        self.placement = place
+        self.ts.set_vertical(place in ("left", "right"))
+        self._apply_layout()
+        if self.app is not None:
+            cfg = getattr(self.app, "cfg", None)
+            if isinstance(cfg, dict):
+                cfg["toolbar_place"] = place
+
+    def _apply_layout(self) -> None:
+        """按 placement 重摆三块：工具栏 / 画布 / 底部按钮。"""
+        for child in list(self.grid.get_children()):
+            self.grid.remove(child)
+        vertical = self.placement in ("left", "right")
+        self.toolbar_area.set_size_request(int(self.ts.bar_w), int(self.ts.bar_h))
+        self.bar_scroll.set_policy(
+            Gtk.PolicyType.AUTOMATIC if not vertical else Gtk.PolicyType.NEVER,
+            Gtk.PolicyType.NEVER if not vertical else Gtk.PolicyType.AUTOMATIC)
+        self.bottom.set_orientation(
+            Gtk.Orientation.VERTICAL if vertical else Gtk.Orientation.HORIZONTAL)
+        if self.placement == "top":
+            self.grid.attach(self.bar_scroll, 0, 0, 1, 1)
+            self.grid.attach(self.canvas_scroll, 0, 1, 1, 1)
+            self.grid.attach(self.bottom, 0, 2, 1, 1)
+        elif self.placement == "bottom":
+            self.grid.attach(self.bottom, 0, 0, 1, 1)
+            self.grid.attach(self.canvas_scroll, 0, 1, 1, 1)
+            self.grid.attach(self.bar_scroll, 0, 2, 1, 1)
+        elif self.placement == "left":
+            self.grid.attach(self.bar_scroll, 0, 0, 1, 1)
+            self.grid.attach(self.canvas_scroll, 1, 0, 1, 1)
+            self.grid.attach(self.bottom, 2, 0, 1, 1)
+        else:                                    # right
+            self.grid.attach(self.bottom, 0, 0, 1, 1)
+            self.grid.attach(self.canvas_scroll, 1, 0, 1, 1)
+            self.grid.attach(self.bar_scroll, 2, 0, 1, 1)
+        self.canvas_scroll.set_hexpand(True)
+        self.canvas_scroll.set_vexpand(True)
+        self.grid.show_all()
 
     # ---------------------------------------------------------------- 生命周期
 
@@ -975,6 +1121,10 @@ class EditorWindow(AnnotationRenderer):
             self._pick_custom_color()
         elif a == "editor":
             self._switch_mode("canvas")
+        elif a == "place":
+            self.set_placement(b.data)
+        elif a == "place":
+            self.set_placement(b.data)
         elif a == "width":
             self.width = b.data
         elif a == "undo":
