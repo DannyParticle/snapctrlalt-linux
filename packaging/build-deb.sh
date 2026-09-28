@@ -275,11 +275,15 @@ if [ "${SKIP_OFFLINE:-0}" != "1" ] && git -C "$ROOT" rev-parse --git-dir >/dev/n
     echo "    快照版本校验：$TAR_VERSION ✓"
 fi
 
-# ---------------------------------------------- 发布清单（发布日期指纹） ---
-# 同一版本号只应存在**一份**产物。之前 1.3.12 出现过"包已经打好、源码又改了
-# 却没重打"的情况（包内 snap.py 少一个参数），光比版本号看不出来。这里把构建
-# 来源（git 提交）+ 各产物 sha256 落成清单，重打就会对不上，一眼可见。
-RELEASE="$DIST/RELEASE-${VERSION}.json"
+# ---------------------------------------------- 发布清单（内容指纹） ---
+# 同一版本号只应存在**一份**产物。1.3.12 出现过"包已经打好、源码又改了却没重打"
+# 的情况（包内 snap.py 少一个 --which 参数），光比版本号看不出来。清单里记：
+#   code_fingerprint  入包文件的哈希指纹 —— 代码一改就对不上
+#   deb/tarball sha256 产物本身的哈希
+# 由 tools/release_manifest.py 生成，tools/version_audit.py 负责核对。
+echo
+echo "==> release manifest"
+python3 tools/release_manifest.py "$VERSION" "$OUT" "$TARBALL"
 echo
 echo "package: $OUT"
 echo "size   : $(du -h "$OUT" | cut -f1)  (installed: ${INSTALLED_SIZE} KiB)"
