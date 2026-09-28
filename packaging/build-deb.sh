@@ -275,6 +275,27 @@ if [ "${SKIP_OFFLINE:-0}" != "1" ] && git -C "$ROOT" rev-parse --git-dir >/dev/n
     echo "    快照版本校验：$TAR_VERSION ✓"
 fi
 
+# ---------------------------------------------- 发布清单（发布日期指纹） ---
+# 同一版本号只应存在**一份**产物。之前 1.3.12 出现过"包已经打好、源码又改了
+# 却没重打"的情况（包内 snap.py 少一个参数），光比版本号看不出来。这里把构建
+# 来源（git 提交）+ 各产物 sha256 落成清单，重打就会对不上，一眼可见。
+RELEASE="$DIST/RELEASE-${VERSION}.json"
+COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+DEB_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
+TAR_SHA=""
+[ -f "$TARBALL" ] && TAR_SHA="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+cat > "$RELEASE" <<JSON
+{
+  "version": "$VERSION",
+  "commit": "$COMMIT",
+  "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "deb": {"file": "$(basename "$OUT")", "sha256": "$DEB_SHA"},
+  "tarball": {"file": "$(basename "$TARBALL")", "sha256": "$TAR_SHA"}
+}
+JSON
+echo
+echo "==> release manifest"
+echo "    $(basename "$RELEASE")  commit ${COMMIT:0:8}"
 echo
 echo "package: $OUT"
 echo "size   : $(du -h "$OUT" | cut -f1)  (installed: ${INSTALLED_SIZE} KiB)"
