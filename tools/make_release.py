@@ -64,7 +64,7 @@ def sha256(p: Path) -> str:
 
 
 def api(method: str, path: str, token: str, data: dict | None = None,
-        ctype: str = "application/json"):
+        ctype: str = "application/json", ok404: bool = False):
     req = urllib.request.Request(f"{API}{path}", method=method)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Accept", "application/vnd.github+json")
@@ -79,6 +79,8 @@ def api(method: str, path: str, token: str, data: dict | None = None,
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
+        if ok404 and e.code == 404:
+            return None            # "还没有这个 release" 是正常情况，不是错误
         detail = e.read().decode("utf-8", "replace")[:300]
         die(f"{method} {path} → HTTP {e.code}：{detail}")
 
@@ -135,12 +137,9 @@ def main() -> int:
         print(f"资产     : {p.name}  {p.stat().st_size / 1024:.0f} KiB")
 
     # 已有同名 release 就复用（重跑友好）
-    rel = None
-    try:
-        rel = api("GET", f"/repos/{args.repo}/releases/tags/{tag}", token)
+    rel = api("GET", f"/repos/{args.repo}/releases/tags/{tag}", token, ok404=True)
+    if rel:
         print("已存在该 tag 的 release，复用它")
-    except SystemExit:
-        rel = None
     if rel is None:
         rel = api("POST", f"/repos/{args.repo}/releases", token, {
             "tag_name": tag,
