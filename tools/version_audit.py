@@ -87,6 +87,16 @@ def main() -> int:
         except ValueError as e:
             bad.append(f"{rel.name} 不是合法 JSON：{e}")
             data = {}
+        # 内容指纹：仓库里任何入包文件变了就对不上 → "打完包又改代码"立刻暴露
+        sys.path.insert(0, str(ROOT / "tools"))
+        import release_manifest as rm  # noqa: PLC0415
+        fp_now, _pairs = rm.fingerprint()
+        fp_rel = str(data.get("code_fingerprint", ""))
+        ok_fp = fp_now == fp_rel
+        print(f"清单 内容指纹 {fp_rel[:12] or '(缺失)'} vs 仓库 {fp_now[:12]} "
+              f"{'✓' if ok_fp else '✗ 包打好之后代码又改过，要重打'}")
+        if not ok_fp:
+            bad.append(f"{rel.name}: 内容指纹不符（包内代码不是当前仓库）")
         for key in ("deb", "tarball"):
             item = data.get(key) or {}
             f = ROOT / "dist" / str(item.get("file", ""))

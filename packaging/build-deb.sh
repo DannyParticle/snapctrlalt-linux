@@ -280,36 +280,6 @@ fi
 # 却没重打"的情况（包内 snap.py 少一个参数），光比版本号看不出来。这里把构建
 # 来源（git 提交）+ 各产物 sha256 落成清单，重打就会对不上，一眼可见。
 RELEASE="$DIST/RELEASE-${VERSION}.json"
-COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-# 包里的代码来自哪个提交：对每个入包文件取"最后一次改动它的提交"，再取其中最老的。
-# 之后只动文档/工具/打包脚本的提交不会影响这个值 —— 比直接记 HEAD 诚实。
-DEBSRC=""
-for f in src/snapctrlalt/*.py share/icons/hicolor/128x128/apps/snapctrlalt.png \
-         share/applications/snapctrlalt.desktop README.md CHANGELOG.md; do
-    c="$(git -C "$ROOT" log -1 --format=%H -- "$f" 2>/dev/null)"
-    [ -z "$c" ] && continue
-    if [ -z "$DEBSRC" ] || [ "$(git -C "$ROOT" rev-list --count "$c")" -lt \
-        "$(git -C "$ROOT" rev-list --count "$DEBSRC")" ]; then
-        DEBSRC="$c"
-    fi
-done
-[ -n "$DEBSRC" ] || DEBSRC="$COMMIT"
-DEB_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
-TAR_SHA=""
-[ -f "$TARBALL" ] && TAR_SHA="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
-cat > "$RELEASE" <<JSON
-{
-  "version": "$VERSION",
-  "git_head": "$COMMIT",
-  "packed_code_from": "$DEBSRC",
-  "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "deb": {"file": "$(basename "$OUT")", "sha256": "$DEB_SHA"},
-  "tarball": {"file": "$(basename "$TARBALL")", "sha256": "$TAR_SHA"}
-}
-JSON
-echo
-echo "==> release manifest"
-echo "    $(basename "$RELEASE")  入包代码来自 ${DEBSRC:0:8}（HEAD ${COMMIT:0:8}）"
 echo
 echo "package: $OUT"
 echo "size   : $(du -h "$OUT" | cut -f1)  (installed: ${INSTALLED_SIZE} KiB)"
