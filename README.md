@@ -327,6 +327,14 @@ scrot / maim / ImageMagick `import`，命中就交给它；起不来则回落到
 | `snapctrlalt-linux.bundle` | **完整 git 历史 + 标签**，推不上去时带走它，在别处 `git clone` 后继续推 |
 | `snapctrlalt-linux-<版本>.tar.gz` | 源码快照，适合做 release 附件 |
 
+上传 GitHub Release（不需要 `gh`，只用标准库调 REST API；重跑会把同名资产换掉）：
+
+```bash
+export GITHUB_TOKEN=<有 repo 权限的 token>
+python3 tools/make_release.py                 # 版本号取源码，说明取 CHANGELOG 对应小节
+python3 tools/make_release.py --draft         # 先建成草稿
+```
+
 `bundle` 的用法（在能联网的机器上）：
 
 ```bash
