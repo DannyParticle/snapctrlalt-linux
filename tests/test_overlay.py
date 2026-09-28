@@ -557,6 +557,61 @@ def test_construction_smoke(app: FakeApp) -> None:
     o.win.destroy()
 
 
+def test_editor_window(app: FakeApp) -> None:
+    """编辑器窗口（方案三）：能构造、能画、能导出、尺寸正确。
+
+    这一形态是为了绕开「独立窗口浮在覆盖层上收不到点击」那类与窗口管理器
+    打交道的问题 —— 它就是一个普通窗口，所以这里在真窗口上验证。
+    """
+    print("\n[16] 编辑器窗口（普通窗口形态）")
+    from snapctrlalt import toolbar as tb_mod
+    from snapctrlalt.overlay import draw_icon
+
+    img = make_screen(320, 240, 1)
+    got: list = []
+    ed = tb_mod.EditorWindow(img, on_commit=lambda i, a: got.append((i.size, a)),
+                             ui_scale=1.0, icon_painter=draw_icon)
+    check("编辑器可构造", ed.win is not None, ed.win.get_title())
+    check("工具栏已排布", len(ed.ts.buttons) > 20, f"{len(ed.ts.buttons)} 个按钮")
+    check("画布尺寸 = 图片尺寸",
+          (ed.canvas.get_size_request().width, ed.canvas.get_size_request().height)
+          == (320, 240),
+          str(ed.canvas.get_size_request()))
+    ed.set_zoom(2.0)
+    check("缩放后画布尺寸成倍",
+          ed.canvas.get_size_request().width == 640, str(ed.canvas.get_size_request()))
+    ed.set_zoom(1.0)
+
+    # 直接提交一个形状，验证导出结果里确实有它
+    before = ed.render_result()
+    ed.shapes = [{"tool": ov.T_RECT, "box": (60.0, 60.0, 200.0, 160.0),
+                  "color": "#ff3b30", "width": 6}]
+    after = ed.render_result()
+    check("导出尺寸 = 原图尺寸", after.size == (320, 240), str(after.size))
+    check("标注被烧进导出结果", diff_bbox(after, before) is not None,
+          str(diff_bbox(after, before)))
+    ed.undo()
+    check("撤销后回到原样", diff_bbox(ed.render_result(), before) is None)
+    ed.redo()
+    check("重做后标注回来", diff_bbox(ed.render_result(), before) is not None)
+    ed.clear()
+    check("清空后没有残留", diff_bbox(ed.render_result(), before) is None)
+
+    # commit 会走 on_commit 并销毁窗口
+    ed.shapes = [{"tool": ov.T_RECT, "box": (20.0, 20.0, 120.0, 100.0),
+                  "color": "#007aff", "width": 4}]
+    ed.commit("copy")
+    check("提交回传了结果与动作", got == [((320, 240), "copy")], str(got))
+
+    # 工具栏比窗口宽时要能自适应收窄（否则两端会被裁掉）
+    narrow = tb_mod.EditorWindow(make_screen(400, 300, 1),
+                                 on_commit=lambda i, a: None,
+                                 ui_scale=2.0, icon_painter=draw_icon)
+    check("窄图时工具栏自适应收窄", narrow.ts.bar_w <= 400,
+          f"工具栏 {narrow.ts.bar_w:.0f} vs 图宽 400")
+    narrow.destroy()
+
+
 def test_cancel(app: FakeApp) -> None:
     print("\n[11] 取消")
     reasons: list[str] = []
@@ -609,7 +664,7 @@ def main() -> int:
                test_scroll_width_and_tools, test_handles_and_move,
                test_persist_and_finish, test_pin, test_toolbar_click_does_not_reset_selection,
                test_handles_work_with_any_tool, test_toolbar_reachable_for_any_selection,
-               test_construction_smoke,
+               test_construction_smoke, test_editor_window,
                test_cancel):
         try:
             fn(app)

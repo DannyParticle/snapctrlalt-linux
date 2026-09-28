@@ -1,3 +1,23 @@
+snapctrlalt (1.3.2) unstable; urgency=medium
+
+  * New editor window mode: after selecting a region the capture opens in an
+    ordinary window (image in the middle, toolbar above, title bar and close
+    button), which the window manager treats like any other window.  Reachable
+    with Ctrl+E from the overlay or via toolbar_mode: editor.
+  * Annotation drawing is now shared between the overlay and the editor through
+    an extracted AnnotationRenderer mixin, so the two presentations cannot
+    drift apart.
+  * The editor toolbar scales itself down to the available width, so a narrow
+    window or a small capture no longer clips its ends.
+  * Note about the "floating toolbar over the mask" variant: two attempts
+    (a decorated window pinned to the mask, and a small always-on-top window)
+    both failed for the same reason -- a separate window above the fullscreen
+    overlay never receives mouse clicks, because a background application
+    cannot raise its own window over the active one.  Only the canvas and
+    editor presentations are offered as a result.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Mon, 28 Sep 2026 20:30:00 +0800
+
 snapctrlalt (1.3.1) unstable; urgency=medium
 
   * The annotation toolbar vanished for anyone who had an external screenshot

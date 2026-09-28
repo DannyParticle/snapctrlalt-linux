@@ -135,6 +135,12 @@ DEFAULTS: dict = {
     "last_save_dir": "",
     "window_pin": True,               # 贴图（钉在桌面）
     "ui_scale": "auto",               # 覆盖层 UI 缩放：auto / 0.5~3.0
+    # 工具栏形态：
+    #   "canvas"（默认）= 画在覆盖层上，紧贴选区；
+    #   "editor"        = 选完区域后开一个普通窗口（像画图程序）标注。
+    # 之前尝试过的「浮在遮罩上的独立小窗 / 单独置顶窗口」两种形态需要和窗口管理器
+    # 争层级与焦点，实测会出现「窗口显示了但收不到点击」，所以没有作为默认。
+    "toolbar_mode": "canvas",
 }
 
 # 兼容旧键名（Windows 版 config.json 直接拿来也能跑）

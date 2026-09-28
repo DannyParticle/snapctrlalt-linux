@@ -161,6 +161,7 @@ class App:
         self._capture_error: str | None = None
         self.last_save: str | None = None
         self.pins: list = []
+        self.editor = None
         self._once = False
 
     # ------------------------------------------------------------ 回调
@@ -271,6 +272,51 @@ class App:
             except RuntimeError:
                 pass
         return path
+
+    def open_editor(self, img: Image.Image) -> None:
+        """打开编辑器窗口（方案三）。完成/取消后回到托盘。"""
+        from . import toolbar as tb_mod
+        from .overlay import draw_icon
+
+        def on_commit(result: Image.Image, action: str) -> None:
+            self._shot_busy = False
+            try:
+                if action == "save":
+                    path = self.ask_save_path()
+                    if not path:
+                        return
+                    self.write_image(result, path)
+                    self.notify(f"已保存 {path}")
+                else:
+                    from . import clipboard_linux
+
+                    clipboard_linux.copy_image(
+                        result, primary=bool(self.cfg.get("copy_to_primary")))
+                    self.notify(f"已复制到剪贴板 {result.width}×{result.height}")
+                    if str(self.cfg.get("after_capture")) == "copy_save":
+                        saved = self.save_image(result, silent=True)
+                        if saved:
+                            self.notify(f"已保存 {saved}")
+            except Exception as e:  # noqa: BLE001
+                self.notify(f"处理失败：{e}")
+
+        def on_cancel() -> None:
+            self._shot_busy = False
+            log("编辑器已取消")
+
+        scale = getattr(self, "_last_ui_scale", 2.0)
+        try:
+            scale = float(self.cfg.get("ui_scale") or 2.0)
+        except (TypeError, ValueError):
+            pass
+        from .overlay import _detect_ui_scale
+
+        self.editor = tb_mod.EditorWindow(
+            img, on_commit=on_commit, on_cancel=on_cancel,
+            ui_scale=_detect_ui_scale(self.cfg), icon_painter=draw_icon)
+        self.editor.show()
+        self._shot_busy = True
+        del scale
 
     def pin_image(self, img: Image.Image) -> None:
         pos = None
@@ -453,6 +499,8 @@ class App:
     def _on_overlay_close(self, reason: str) -> None:
         self.overlay = None
         self._shot_busy = False
+        if reason == "editor":
+            return                       # 交给编辑器窗口继续，别当作结束
         if reason == "finish":
             # 剪贴板是选区所有者模型：立刻驱动主循环把数据交付出去
             GLib.timeout_add(60, self._pump_clipboard)

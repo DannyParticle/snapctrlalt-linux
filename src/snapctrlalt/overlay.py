@@ -30,6 +30,9 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango, PangoCairo  # noqa: 
 from PIL import Image, ImageFilter  # noqa: E402
 
 from . import geometry  # noqa: E402
+from . import toolbar as tb_mod  # noqa: E402
+
+pil_to_surface = tb_mod.pil_to_surface
 
 # ---------------------------------------------------------------- 常量
 
@@ -126,41 +129,6 @@ def _clip_box(box, region):
     return x0, y0, x1, y1
 
 
-def pil_to_surface(img: Image.Image) -> cairo.ImageSurface:
-    """PIL -> Cairo surface。
-
-    Cairo 的 ``ARGB32`` 是预乘 alpha 的，PIL 的 RGBA 不是；不透明图（截屏主体）
-    直接按 BGRA 字节序喂给 Cairo 即可，只有真带 alpha 的图才需要预乘（那会走
-    Python 逐像素循环，所以要避开）。
-    """
-    if img.mode == "RGB":
-        rgb = img.tobytes()
-        bgra = bytearray(len(rgb) // 3 * 4)
-        bgra[0::4] = rgb[2::3]
-        bgra[1::4] = rgb[1::3]
-        bgra[2::4] = rgb[0::3]
-        bgra[3::4] = b"\xff" * (len(bgra) // 4)
-        return cairo.ImageSurface.create_for_data(
-            bgra, cairo.FORMAT_ARGB32, img.width, img.height, img.width * 4
-        )
-    if img.mode != "RGBA":
-        img = img.convert("RGBA")
-    data = bytearray(img.tobytes())
-    if data[3::4] != b"\xff" * (len(data) // 4):  # 有透明像素时才预乘
-        for i in range(0, len(data), 4):
-            a = data[i + 3]
-            if a == 255:
-                continue
-            if a == 0:
-                data[i] = data[i + 1] = data[i + 2] = 0
-            else:
-                f = a / 255.0
-                data[i] = int(data[i] * f)
-                data[i + 1] = int(data[i + 1] * f)
-                data[i + 2] = int(data[i + 2] * f)
-    return cairo.ImageSurface.create_for_data(
-        data, cairo.FORMAT_ARGB32, img.width, img.height, img.width * 4
-    )
 
 
 def surface_to_pil(surface: cairo.ImageSurface) -> Image.Image:
@@ -529,7 +497,7 @@ def _fallback_geometry(img_w: int, img_h: int, box=None, scale: int = 0):
                     ptr_offset_x=float(bx), ptr_offset_y=float(by))
 
 
-class ShotOverlay:
+class ShotOverlay(tb_mod.AnnotationRenderer):
     """全屏截图覆盖层。生命周期内独占一个 GTK 窗口。"""
 
     PRESENT = True        # 测试脚手架会置 False，避免在真实桌面上弹窗
@@ -564,6 +532,15 @@ class ShotOverlay:
         # 显示器的缩放系数放大 —— 它只作用于绘制，不参与任何坐标换算，
         # 框选与截取的一致性不受影响。
         self.ui_scale = _detect_ui_scale(getattr(app, "cfg", {}) or {})
+        # 工具栏形态：默认画在覆盖层上；配置里开 separate_toolbar 就改用独立窗口。
+        # 独立窗口是「备选形态」：它不参与覆盖层绘制，因此天然免疫那一堆
+        # clip / 缩放问题，但需要自己处理焦点（窗口设成不接受焦点）。
+        _cfg = getattr(app, "cfg", {}) or {}
+        self._tb_mode = str(_cfg.get("toolbar_mode", "canvas") or "canvas").lower()
+        if _cfg.get("separate_toolbar"):
+            self._tb_mode = "mask"          # 兼容旧键：等价于「独立置顶小窗」
+        self._use_sep_toolbar = self._tb_mode in ("mask", "window")
+        self._tb_window = None
         # 画布坐标系 = X11 根像素（与 GTK 事件坐标同源，绘制 1:1 不重采样）
         self.cr_w = max(1, int(self.geo.root_w))
         self.cr_h = max(1, int(self.geo.root_h))
@@ -841,6 +818,7 @@ class ShotOverlay:
     def _redraw(self) -> None:
         if not self._closed:
             self.area.queue_draw()
+        self._ensure_tb_window()
 
     def _ensure_dim(self) -> cairo.Surface:
         """整屏压暗层，只在底图变化时重建（对应 Windows 版 _dimmed 缓存）。"""
@@ -1052,138 +1030,6 @@ class ShotOverlay:
 
     # ------------------------------------------------------------ 形状绘制
 
-    def _draw_shapes(self, cr, region=None) -> None:
-        """绘制全部标注。``region`` 用图像像素给出（与 shape 里的坐标同一坐标系）。"""
-        if region is not None:
-            region = (region[0] / self.geo.zoom_x, region[1] / self.geo.zoom_y,
-                      region[2] / self.geo.zoom_x, region[3] / self.geo.zoom_y)
-        for s in self.shapes:
-            try:
-                self._draw_shape(cr, s, region)
-            except Exception as e:  # noqa: BLE001
-                print(f"[overlay] 形状绘制失败 {s.get('tool')}: {e}")
-
-    def _draw_shape(self, cr, s: dict, region=None) -> None:
-        tool = s.get("tool")
-        color = _rgba(s.get("color", self.color))
-        sc = float(self.dev_scale)
-        lw = float(s.get("width", self.width)) / sc      # 图像线宽 -> 画布线宽
-
-        if tool in (T_MOSAIC, T_BLUR):
-            box = _clip_box(s["box"], region) if region else s["box"]
-            if not box:
-                return
-            ix0, iy0, ix1, iy1 = [int(round(v)) for v in box]
-            ix0, iy0 = max(0, ix0), max(0, iy0)
-            ix1, iy1 = min(self.img_w, ix1), min(self.img_h, iy1)
-            if ix1 - ix0 < 2 or iy1 - iy0 < 2:
-                return
-            # 效果图只算一次并挂在 shape 上：整屏重绘时不必每帧重跑滤波
-            surf = s.get("_surf")
-            if surf is None or s.get("_surf_box") != (ix0, iy0, ix1, iy1):
-                crop = self.screen.crop((ix0, iy0, ix1, iy1))
-                if tool == T_MOSAIC:
-                    block = max(6, int(s.get("width", 4)) * 3)
-                    cw, ch = crop.size
-                    small = crop.resize((max(1, cw // block), max(1, ch // block)),
-                                        Image.BILINEAR)
-                    crop = small.resize((cw, ch), Image.NEAREST)
-                else:
-                    crop = crop.filter(
-                        ImageFilter.GaussianBlur(radius=4 + int(s.get("width", 4))))
-                surf = pil_to_surface(crop.convert("RGB"))
-                s["_surf"] = surf
-                s["_surf_box"] = (ix0, iy0, ix1, iy1)
-                s["_surf_scale"] = self.dev_scale
-            cr.save()
-            cr.rectangle(ix0 / sc, iy0 / sc, (ix1 - ix0) / sc, (iy1 - iy0) / sc)
-            cr.clip()
-            cr.scale(1.0 / sc, 1.0 / sc)
-            cr.set_source_surface(surf, ix0, iy0)
-            cr.paint()
-            cr.restore()
-            return
-
-        cr.save()
-        cr.set_line_width(lw)
-        cr.set_line_cap(cairo.LINE_CAP_ROUND)
-        cr.set_line_join(cairo.LINE_JOIN_ROUND)
-        cr.set_source_rgba(*color)
-
-        if tool == T_RECT:
-            x0, y0, x1, y1 = s["box"]
-            x0, y0, x1, y1 = x0 / sc, y0 / sc, x1 / sc, y1 / sc
-            cr.rectangle(x0, y0, x1 - x0, y1 - y0)
-            cr.stroke()
-        elif tool == T_ELLIPSE:
-            x0, y0, x1, y1 = [v / sc for v in s["box"]]
-            cr.save()
-            cr.translate((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-            cr.scale(max(0.01, (x1 - x0) / 2.0), max(0.01, (y1 - y0) / 2.0))
-            cr.arc(0, 0, 1, 0, 2 * math.pi)
-            cr.restore()
-            cr.stroke()
-        elif tool == T_ARROW:
-            p0 = (s["p0"][0] / sc, s["p0"][1] / sc)
-            p1 = (s["p1"][0] / sc, s["p1"][1] / sc)
-            self._arrow_path(cr, p0, p1, lw)
-            cr.stroke()
-        elif tool in (T_PEN, T_HIGHLIGHT):
-            pts = list(s.get("points") or [])
-            if region:
-                pts = [p for p in pts if region[0] - 4 <= p[0] <= region[2] + 4
-                       and region[1] - 4 <= p[1] <= region[3] + 4]
-            if len(pts) >= 2:
-                if tool == T_HIGHLIGHT:
-                    cr.set_line_width(max(lw, 10 / sc))
-                    cr.set_source_rgba(color[0], color[1], color[2], 0.35)
-                cr.move_to(pts[0][0] / sc, pts[0][1] / sc)
-                for p in pts[1:]:
-                    cr.line_to(p[0] / sc, p[1] / sc)
-                cr.stroke()
-        elif tool == T_TEXT:
-            x, y = s["xy"]
-            layout = PangoCairo.create_layout(cr)
-            layout.set_font_description(_font(float(s.get("size", 24)) / sc))
-            layout.set_text(str(s.get("text", "")), -1)
-            cr.move_to(x / sc, y / sc)
-            cr.set_source_rgba(*color)
-            PangoCairo.show_layout(cr, layout)
-        elif tool == T_SEQ:
-            x, y = s["xy"][0] / sc, s["xy"][1] / sc
-            r = float(s.get("size", 24)) / sc
-            n = int(s.get("n", 1))
-            cr.set_source_rgba(*color)
-            cr.arc(x, y, r, 0, 2 * math.pi)
-            cr.fill_preserve()
-            cr.set_source_rgba(1, 1, 1, 1)
-            cr.set_line_width(2.0)
-            cr.stroke()
-            txt = _CIRCLED[n - 1] if 1 <= n <= len(_CIRCLED) else str(n)
-            layout = PangoCairo.create_layout(cr)
-            layout.set_font_description(_font(r * 1.15, bold=True))
-            layout.set_text(txt, -1)
-            tw, th = layout.get_pixel_size()
-            cr.set_source_rgba(1, 1, 1, 1)
-            cr.move_to(x - tw / 2.0, y - th / 2.0)
-            PangoCairo.show_layout(cr, layout)
-        cr.restore()
-
-    def _arrow_path(self, cr, p0, p1, lw) -> None:
-        x0, y0 = p0
-        x1, y1 = p1
-        ang = math.atan2(y1 - y0, x1 - x0)
-        head = max(12.0, lw * 3.2)
-        # 箭杆收在箭头根部，避免线头戳出箭尖
-        bx = x1 - head * 0.75 * math.cos(ang)
-        by = y1 - head * 0.75 * math.sin(ang)
-        cr.move_to(x0, y0)
-        cr.line_to(bx, by)
-        cr.move_to(x1, y1)
-        for da in (math.pi * 0.78, -math.pi * 0.78):
-            cr.line_to(x1 + head * math.cos(ang + da), y1 + head * math.sin(ang + da))
-        cr.close_path()
-
     def _draw_preview(self, cr, d: dict) -> None:
         tool = d.get("tool")
         if not tool:
@@ -1342,6 +1188,42 @@ class ShotOverlay:
 
     # ------------------------------------------------------------ 工具栏
 
+    # ---------------------------------------------------- 独立工具栏窗口
+
+    def _ensure_tb_window(self) -> None:
+        """按需创建独立工具栏窗口，并把选区变化同步过去。"""
+        if not self._use_sep_toolbar or self._closed:
+            return
+        if self._tb_window is None:
+            from . import toolbar as tb_mod
+
+            self._tb_window = tb_mod.ToolbarWindow(
+                on_action=self._on_tb_window_action,
+                ui_scale=self.ui_scale,
+                icon_painter=draw_icon,
+                on_hover=self._status_tip,
+            )
+        if self.sel is not None and self.mode == "draw":
+            self._tb_window.set_state(self.tool, self.color)
+            self._tb_window.place(self.sel, self.origin,
+                                  (self.geo.root_w, self.geo.root_h))
+            self._tb_window.show(parent=self.win)
+        else:
+            self._tb_window.hide()
+
+    def _status_tip(self, tip: str) -> None:
+        if tip:
+            self.status_cb(tip)
+
+    def _on_tb_window_action(self, button) -> None:
+        """独立窗口里点了按钮 —— 复用与画布工具栏完全相同的动作分发。"""
+        try:
+            self._activate(button)
+        except Exception as e:  # noqa: BLE001
+            print(f"[overlay] 工具栏动作失败: {e}")
+        self._ensure_tb_window()
+        self._redraw()
+
     def _layout_toolbar(self) -> None:
         """计算工具栏位置与每个按钮的矩形，**统一使用画布坐标**。
 
@@ -1476,6 +1358,8 @@ class ShotOverlay:
         放大 2 倍」—— 工具栏跑到 clip 之外被整条裁掉（实测 clip 是 0..1440，
         而它被画到 x 1400..2524）。表现就是**工具栏整个不见了**。
         """
+        if self._tb_window is not None:
+            return                    # 工具栏在独立窗口里，覆盖层不画
         self._layout_toolbar()
         bx, by, bw, bh = self._tb_pos
         self._paint_toolbar(cr, bx, by, bw, bh)
@@ -1669,7 +1553,8 @@ class ShotOverlay:
         # 工具栏优先：命中按钮就执行；落在按钮之间的空隙上也只是「什么都不做」。
         # 不能让它继续往下走 —— 那会被当成「点在选区外」，于是清掉选区、重新
         # 开始框选，用户的感觉就是「点半天点不中，还得重新截」。
-        if self.sel is not None and self.mode == "draw" and self._tb_pos is not None:
+        if (self._tb_window is None and self.sel is not None
+                and self.mode == "draw" and self._tb_pos is not None):
             tbx, tby, tbw, tbh = self._tb_pos
             if tbx <= x <= tbx + tbw and tby <= y <= tby + tbh:
                 b = self._button_at(x, y)
@@ -1912,6 +1797,8 @@ class ShotOverlay:
             self.clear()
         elif a == "save":
             self.save()
+        elif a == "editor":
+            self.open_in_editor()
         elif a == "pin":
             self.pin()
         elif a == "cancel":
@@ -2058,6 +1945,9 @@ class ShotOverlay:
             return True
         if ctrl and kv in (Gdk.KEY_c, Gdk.KEY_C):
             self.finish()
+            return True
+        if ctrl and kv in (Gdk.KEY_e, Gdk.KEY_E):
+            self.open_in_editor()
             return True
         if ctrl and kv in (Gdk.KEY_t, Gdk.KEY_T):
             self.pin()
@@ -2218,6 +2108,20 @@ class ShotOverlay:
             return
         self._close("save")
 
+    def open_in_editor(self) -> None:
+        """把当前选区结果交给编辑器窗口（方案三）。
+
+        编辑器是一个普通窗口，不受覆盖层那套层级/焦点限制；标注逻辑与覆盖层
+        共用 ``AnnotationRenderer``，所以工具行为完全一致。
+        """
+        img = self.render_result()
+        self.status_cb(f"已在编辑器里打开 {img.width}×{img.height}")
+        self._close("editor")
+        try:
+            self.app.open_editor(img)
+        except Exception as e:  # noqa: BLE001
+            print(f"[overlay] 打开编辑器失败: {e}")
+
     def pin(self) -> None:
         """贴图：把当前结果钉成一个置顶小窗（对标 QQ 截图的贴图）。"""
         img = self.render_result()
@@ -2237,6 +2141,12 @@ class ShotOverlay:
         self._closed = True
         self._finishing = True
         self._tip_text = ""
+        if self._tb_window is not None:
+            try:
+                self._tb_window.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+            self._tb_window = None
         try:
             self.win.destroy()
         except Exception:  # noqa: BLE001
