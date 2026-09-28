@@ -66,6 +66,11 @@ class FakeApp:
         img.save(path)
         self.saved.append(str(path))
 
+    def switch_toolbar_mode(self, mode=None):
+        self.switched = getattr(self, "switched", [])
+        self.switched.append(mode)
+        return mode or "editor"
+
     def pin_image(self, img):
         self.pinned.append(img)
 
@@ -679,6 +684,42 @@ def test_reselect_switch(app: FakeApp) -> None:
     o.win.destroy()
 
 
+def test_toolbar_mode_switch_button(app: FakeApp) -> None:
+    """工具栏上要能一键试另一个方案（临时，不动默认设置）。
+
+    用户原话：「临时切换应该指的是在方案一（或三）的工具栏显示」——所以两个
+    形态的工具栏里都必须有这个按钮，点了就切到另一个形态，且**只对本次生效**：
+    内存里的 _toolbar_mode_once 被消费，配置文件里的 toolbar_mode 不变。
+    """
+    print("\n[23] 工具栏上的「临时切换方案」按钮")
+    o = _overlay_for(app, (1160, 700, 1720, 900))
+    btn = [b for b in o._buttons if b.action == "editor"]
+    check("方案①工具栏有「临时切换」按钮", bool(btn), f"{len(o._buttons)} 个按钮")
+    if btn:
+        check("按钮提示写明只这一次", "只这一次" in btn[0].tip, btn[0].tip)
+        o._activate(btn[0])
+        check("点了会请求切换到方案③",
+              getattr(app, "switched", [])[-1:] == ["editor"],
+              str(getattr(app, "switched", [])))
+    o.win.destroy()
+
+    import snapctrlalt.toolbar as tb_mod  # noqa: PLC0415
+    specs = tb_mod._row_specs()
+    actions = [item[2] for row in specs for item in row if item != "sep"]
+    check("方案③工具栏（共用同一套声明）也有该按钮", "editor" in actions, str(actions))
+
+    # 编辑器窗口点这个按钮 → 请求切回方案①
+    from PIL import Image as _I  # noqa: PLC0415
+
+    ed = tb_mod.EditorWindow(_I.new("RGB", (300, 200), (10, 20, 30)),
+                             on_commit=lambda *a: None, ui_scale=2.0, app=app)
+    ed._switch_mode("canvas")
+    check("方案③里点按钮会请求切换到方案①",
+          getattr(app, "switched", [])[-1:] == ["canvas"],
+          str(getattr(app, "switched", [])))
+    ed.win.destroy()
+
+
 def test_construction_smoke(app: FakeApp) -> None:
     """覆盖层必须能真的构造出来（真窗口，非离屏）。
 
@@ -928,7 +969,7 @@ def main() -> int:
                test_toolbar_follows_selection, test_scale_reconciliation,
                test_modal_freezes_overlay, test_cancel,
                test_color_panel_inside_toolbar, test_color_panel_drag,
-               test_reselect_switch):
+               test_reselect_switch, test_toolbar_mode_switch_button):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

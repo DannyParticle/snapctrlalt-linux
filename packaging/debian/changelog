@@ -1,3 +1,18 @@
+snapctrlalt (1.3.12) unstable; urgency=medium
+
+  * The toolbar of both layouts (canvas and editor) now has a one-click
+    "switch layout" button.  It only applies to the current run -- the saved
+    default is untouched -- and reopens the overlay on the same frozen frame
+    instead of taking a new screenshot.
+  * New tools/restart_resident.py: a running resident keeps the old code in
+    memory after an upgrade, which is why the UI could still look stale after
+    installing a new deb.  The tool compares process start time with the code
+    on disk, restarts when needed and reports a stale installation.
+  * New tools/verify_live_ui.py: end-to-end checks against the running
+    instance instead of a freshly started one.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 06:40:00 +0800
+
 snapctrlalt (1.3.11) unstable; urgency=medium
 
   * The colour picker is now part of the toolbar: RGB sliders, a grey-level

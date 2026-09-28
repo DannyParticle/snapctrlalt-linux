@@ -149,6 +149,9 @@ class App:
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg
         self.overlay: ShotOverlay | None = None
+        # 最近一次抓图的上下文：切换工具栏形态时直接用它重开覆盖层，
+        # 不再重新抓图（否则切一下形态就换了一张截图，用户会觉得莫名）。
+        self._last_shot: tuple[Image.Image, object, object] | None = None
         self.tray: TrayIcon | None = None
         self.hotkeys = HotkeyManager()
         self.notifier = notify_linux.Notifier(enabled=bool(cfg.get("notify", True)))
@@ -312,7 +315,7 @@ class App:
         from .overlay import _detect_ui_scale
 
         self.editor = tb_mod.EditorWindow(
-            img, on_commit=on_commit, on_cancel=on_cancel,
+            img, on_commit=on_commit, on_cancel=on_cancel, app=self,
             ui_scale=_detect_ui_scale(self.cfg), icon_painter=draw_icon)
         self.editor.show()
         self._shot_busy = True
@@ -421,7 +424,9 @@ class App:
             self.notify(msg)
             self._show_error(msg)
             return
+        self._last_shot = (img, boxes, None)
         geo = geometry.measure((img.width, img.height), gdk_scale=self._gdk_scale())
+        self._last_shot = (img, boxes, geo)
         log(f"抓图完成 {img.width}×{img.height}（{time.perf_counter() - then:.2f}s）")
         log("坐标标定 " + geo.describe().replace("\n", "\n         "))
         for problem in geo.check():
@@ -447,6 +452,48 @@ class App:
         if once in ("canvas", "editor"):
             return once
         return str(self.cfg.get("toolbar_mode", "canvas") or "canvas").lower()
+
+    def switch_toolbar_mode(self, mode: str | None = None) -> str:
+        """临时切到另一个工具栏形态，**只对下一次本窗口生效，不改默认设置**。
+
+        用户要的是「方案① / 方案③ 的工具栏上直接点一下就能试另一个」，
+        而不是回到设置窗口里改默认值。所以这里做两件事：
+
+        * 把 ``_toolbar_mode_once`` 写进内存配置（``_open_overlay`` 会消费掉，
+          不落盘，重启后回到默认形态）；
+        * 用**同一张截图**立刻重开覆盖层 —— 不重新抓图，画面不会变；
+          当前窗口里的标注会丢（正好当作"重来一次"，不需要额外确认弹窗）。
+
+        返回真正生效的目标形态。
+        """
+        cur = self._effective_toolbar_mode()
+        want = (mode or ("editor" if cur == "canvas" else "canvas")).lower()
+        if want not in ("canvas", "editor"):
+            want = "canvas"
+        self.cfg["_toolbar_mode_once"] = want
+        shot = self._last_shot
+        if not shot or shot[2] is None:
+            # 没有可复用的截图（例如从托盘菜单直接切）：退回重新抓一张
+            self._shot_busy = False
+            self.trigger_shot()
+        else:
+            img, boxes, geo = shot
+            if self.overlay is not None:
+                try:
+                    self.overlay.cancel()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.overlay = None
+            if self.editor is not None:
+                try:
+                    self.editor.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.editor = None
+            self._shot_busy = True
+            self._open_overlay(img, boxes, geo)
+        log(f"临时切换工具栏形态 → {want}（默认值不变）")
+        return want
 
     def _open_overlay(self, img: Image.Image, boxes, geo) -> None:
         if self.overlay is not None:

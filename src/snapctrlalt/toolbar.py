@@ -116,7 +116,7 @@ def _row_specs():
              for k, w in (("width", WIDTHS[0]), ("width2", WIDTHS[1]),
                           ("width3", WIDTHS[2]))]
     row2.append("sep")
-    row2 += [("editor", "在编辑器窗口里标注 (Ctrl+E)", "editor", None)]
+    row2 += [("editor", "临时切到方案①（贴选区工具栏）· 只这一次，默认不变", "editor", None)]
     row2.append("sep")
     row2 += [("undo", "撤销 (Ctrl+Z)", "undo", None),
              ("redo", "重做 (Ctrl+Shift+Z)", "redo", None),
@@ -784,7 +784,9 @@ class EditorWindow(AnnotationRenderer):
     """
 
     def __init__(self, image, on_commit, on_cancel=None, ui_scale: float = 1.0,
-                 icon_painter=None, title: str = "SnapCtrlAlt 标注") -> None:
+                 icon_painter=None, title: str = "SnapCtrlAlt 标注", app=None) -> None:
+        # app 用来做「临时切到方案①」：只改本次运行的形态，不动默认设置
+        self.app = app
         self.on_commit = on_commit
         self.on_cancel = on_cancel or (lambda: None)
         self.icon_painter = icon_painter
@@ -971,6 +973,8 @@ class EditorWindow(AnnotationRenderer):
             self.color = b.data
         elif a == "custom_color":
             self._pick_custom_color()
+        elif a == "editor":
+            self._switch_mode("canvas")
         elif a == "width":
             self.width = b.data
         elif a == "undo":
@@ -990,6 +994,14 @@ class EditorWindow(AnnotationRenderer):
             return
         self.toolbar_area.queue_draw()
         self.canvas.queue_draw()
+
+    def _switch_mode(self, mode: str) -> None:
+        """一键切到另一个工具栏形态（方案① 贴选区工具栏）。"""
+        fn = getattr(self.app, "switch_toolbar_mode", None)
+        if callable(fn):
+            fn(mode)
+        else:
+            self.win.destroy()
 
     # ---------------------------------------------------------------- 画布
 

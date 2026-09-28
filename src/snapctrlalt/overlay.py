@@ -1351,6 +1351,11 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
                       for k, w in (("width", WIDTHS[0]), ("width2", WIDTHS[1]),
                                    ("width3", WIDTHS[2]))]
         row2_spec.append("sep")
+        # 一键试另一个方案：点了用它临时切到方案③（只这一次，默认设置不变）。
+        # 用户明确要求这个入口要出现在**工具栏上**，而不是藏在设置窗口里。
+        row2_spec += [("editor", "临时切到方案③（编辑器窗口）· 只这一次，默认不变 (Ctrl+E)",
+                       "editor", None)]
+        row2_spec.append("sep")
         row2_spec += [("undo", "撤销 (Ctrl+Z)", "undo", None),
                       ("redo", "重做 (Ctrl+Shift+Z)", "redo", None),
                       ("clear", "清空所有标注", "clear", None)]
@@ -1911,7 +1916,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         elif a == "save":
             self.save()
         elif a == "editor":
-            self.open_in_editor()
+            self._switch_mode("editor")
         elif a == "pin":
             self.pin()
         elif a == "cancel":
@@ -2636,6 +2641,19 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             self.status_cb(f"保存失败：{e}")
             return
         self._close("save")
+
+    def _switch_mode(self, mode: str) -> None:
+        """一键切到另一个工具栏形态（工具栏上的「临时切换」按钮）。
+
+        不重新抓图：用同一张冻结画面重开覆盖层，所以画面不会变。当前窗口里的
+        标注会丢 —— 这正好当作「重来一次」，也省掉一个确认弹窗（用户要的是
+        「临时切换」，不是「放弃当前标注」的二次确认）。
+        """
+        fn = getattr(self.app, "switch_toolbar_mode", None)
+        if callable(fn):
+            fn(mode)
+        else:                              # 兜底：老接口，直接开编辑器
+            self.open_in_editor()
 
     def open_in_editor(self) -> None:
         """把当前选区结果交给编辑器窗口（方案三）。
