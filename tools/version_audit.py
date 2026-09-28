@@ -96,12 +96,11 @@ def main() -> int:
                 bad.append(f"清单里的 {item['file']} 不存在")
                 print(f"清单 {key:8s} {item.get('file')}  → 文件不见了 ✗")
                 continue
-            got = hashlib.md5(f.read_bytes()).hexdigest()  # noqa: F841  (仅用于提示)
-            import hashlib as _h
-            sha = _h.sha256(f.read_bytes()).hexdigest()
+            sha = hashlib.sha256(f.read_bytes()).hexdigest()
             ok = sha == item.get("sha256")
             print(f"清单 {key:8s} {item.get('file'):38s} "
-                  f"commit {str(data.get('commit'))[:8]} {'✓' if ok else '✗ sha256 不符'}")
+                  f"入包代码来自 {str(data.get('packed_code_from'))[:8]} "
+                  f"{'✓' if ok else '✗ sha256 不符'}")
             if not ok:
                 bad.append(f"{item['file']} 与发布清单不符（重打过？）")
     else:
