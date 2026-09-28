@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import gi  # noqa: E402
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import Gdk, Gtk  # noqa: E402
 
 from PIL import Image, ImageChops  # noqa: E402
 
@@ -681,6 +681,46 @@ def test_scale_reconciliation(app: FakeApp) -> None:
     o2.win.destroy()
 
 
+def test_modal_freezes_overlay(app: FakeApp) -> None:
+    """模态子窗口（颜色对话框）打开期间，覆盖层必须完全不处理输入。
+
+    否则用户在对话框上的点击会落到覆盖层的逻辑里，被当成「点在选区外」，
+    直接把这次截图取消掉 —— 换一次颜色就丢一次截图，多色标注没法用。
+    """
+    print("\n[19] 模态窗口期间冻结覆盖层")
+    o = new_overlay(app)
+    o.sel = (100.0, 100.0, 500.0, 400.0)
+    o.mode = "draw"
+    o._layout_toolbar()
+
+    before_sel = o.sel
+    o._modal_open = True
+    # 点选区外（正常会取消/重新框选）→ 冻结时应毫无反应
+    o._on_press(o.win, _FakeEvent(x=900, y=700, button=1))
+    check("冻结时点选区外：选区不变", o.sel == before_sel, str(o.sel))
+    check("冻结时点选区外：模式不变", o.mode == "draw", o.mode)
+    o._on_key(o.win, _FakeKeyEvent(Gdk.KEY_Escape))
+    check("冻结时按 Esc：不取消截图", not o._closed and o.sel == before_sel)
+
+    # 解冻后恢复正常
+    o._modal_open = False
+    o._on_press(o.win, _FakeEvent(x=900, y=700, button=1))
+    check("解冻后点选区外：恢复重新框选", o.mode == "select", o.mode)
+    o._drag = None
+    o.win.destroy()
+
+
+class _FakeKeyEvent:
+    def __init__(self, keyval: int) -> None:
+        import gi as _gi
+
+        _gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk as _G
+
+        self.keyval = keyval
+        self.state = _G.ModifierType(0)
+
+
 def test_cancel(app: FakeApp) -> None:
     print("\n[11] 取消")
     reasons: list[str] = []
@@ -735,7 +775,7 @@ def main() -> int:
                test_handles_work_with_any_tool, test_toolbar_reachable_for_any_selection,
                test_construction_smoke, test_editor_window,
                test_toolbar_follows_selection, test_scale_reconciliation,
-               test_cancel):
+               test_modal_freezes_overlay, test_cancel):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

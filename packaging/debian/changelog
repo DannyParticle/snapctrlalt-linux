@@ -1,3 +1,17 @@
+snapctrlalt (1.3.8) unstable; urgency=medium
+
+  * Choosing a colour no longer throws the capture away.  While the colour
+    dialog was open the overlay kept handling mouse events, so clicks made in
+    the dialog were treated as "clicked outside the selection" and cancelled
+    the session -- picking a second colour meant capturing again.  The overlay
+    now freezes all input while a modal child window is open and restores focus
+    afterwards.
+  * The colour dialog now opens on a plain left click (it used a non-blocking
+    show() whose focus and response were unreliable) and is transient for the
+    overlay so it cannot end up behind it.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 02:00:00 +0800
+
 snapctrlalt (1.3.7) unstable; urgency=medium
 
   * Fixed the custom colour picker, which did not work in either presentation:

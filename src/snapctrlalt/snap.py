@@ -1150,15 +1150,6 @@ class App:
                 bx, by, bw, bh = o._tb_pos
                 print(f"TBGEO 工具栏=({bx:.0f},{by:.0f},{bw:.0f}x{bh:.0f}) "
                       f"画布={o.cr_w}x{o.cr_h} ui={o.ui_scale}", flush=True)
-        elif cmd == "dbgtb":
-            o = self.overlay
-            if o is not None:
-                print("dbgtb 画布=%sx%s ui_scale=%s 选区=%s 工具栏(UI)=%s "
-                      "工具栏(画布)=%s 分配=%sx%s" % (
-                          o.cr_w, o.cr_h, o.ui_scale, o.sel, o._tb_pos,
-                          tuple(round(v * o.ui_scale, 1) for v in o._tb_pos) if o._tb_pos else None,
-                          o.area.get_allocated_width(), o.area.get_allocated_height()),
-                      flush=True)
         return False
 
     def quit(self) -> None:

@@ -606,6 +606,10 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self._saving = False
         self._color_dlg = None
         self._color_before = COLORS[0]
+        # 颜色对话框等模态子窗口打开时，覆盖层必须**完全停止**处理输入：
+        # 否则用户在对话框上的点击会被当成「点在选区外」，直接把这次截图取消掉
+        # ——这就是「选个颜色就把截图任务退出了」的原因。
+        self._modal_open = False
 
         # 窗口
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -1557,7 +1561,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             self.status_cb(f"已自动校正坐标：{self.geo.describe().splitlines()[-1].strip()}")
 
     def _on_motion(self, _w, event) -> bool:
-        if self._closed:
+        if self._closed or self._modal_open:
             return False
         self._verify_pointer(event)
         x, y = self._pos(event)
@@ -1586,7 +1590,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         return False
 
     def _on_press(self, _w, event) -> bool:
-        if self._closed:
+        if self._closed or self._modal_open:
             return False
         x, y = self._pos(event)
         ix, iy = self._to_img(x, y)
@@ -1677,7 +1681,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         return True
 
     def _on_release(self, _w, event) -> bool:
-        if self._closed or event.button != 1 or not self._drag:
+        if self._closed or self._modal_open or event.button != 1 or not self._drag:
             return False
         x, y = self._pos(event)
         ix, iy = self._to_img(x, y)
@@ -1706,6 +1710,8 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         return True
 
     def _on_scroll(self, _w, event) -> bool:
+        if self._modal_open:
+            return False
         if self.tool in (T_PEN, T_HIGHLIGHT, T_RECT, T_ELLIPSE, T_ARROW, T_MOSAIC, T_BLUR):
             idx = WIDTHS.index(self.width) if self.width in WIDTHS else 1
             idx = min(idx + 1, len(WIDTHS) - 1) if event.direction == Gdk.ScrollDirection.UP \
@@ -1882,15 +1888,19 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         self.color = c
 
     def _pick_custom_color(self) -> None:
-        """选自定义颜色（非阻塞）。
+        """选自定义颜色。
 
-        必须用非阻塞方式：覆盖层是全屏置顶窗口，`dlg.run()` 会在它下面，
-        对话框既可能被压住、也可能拿不到响应 —— 用户的感觉就是"选不了颜色"。
-        这里改为 show() + 信号回调，并把对话框设成覆盖层的临时窗口保证置顶。
+        对话框打开期间把整个覆盖层冻结（``_modal_open``）：否则用户在对话框上的
+        每次点击都会落到覆盖层的处理逻辑里，被当成「点在选区外」→ 直接取消这次
+        截图。用户要多种颜色反复标注时，那等于每换一次颜色就丢一次截图。
+
+        对话框本身用 ``run()``（模态、自带主循环），并在结束后恢复覆盖层的
+        焦点与状态；取消时还原原来的颜色。
         """
-        if getattr(self, "_color_dlg", None) is not None:
+        if self._color_dlg is not None:
             self._color_dlg.present()
             return
+        self._modal_open = True
         self._focus_guard = True
         self._color_before = self.color
         dlg = Gtk.ColorChooserDialog(title="选择标注颜色", parent=self.win)
@@ -1907,11 +1917,16 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         # 实时预览：拖动取色时覆盖层的当前色跟着变
         dlg.connect("notify::rgba",
                     lambda d, _p: self._set_color(self._rgba_hex(d.get_rgba())))
-        dlg.connect("response", self._on_color_response)
         dlg.connect("destroy", lambda *_: setattr(self, "_color_dlg", None))
         self._color_dlg = dlg
         dlg.show_all()
         dlg.present()
+        try:
+            resp = dlg.run()
+        except Exception as e:  # noqa: BLE001
+            print(f"[overlay] 颜色对话框异常: {e}", flush=True)
+            resp = Gtk.ResponseType.CANCEL
+        self._on_color_response(dlg, resp)
 
     def _on_color_response(self, dlg, resp) -> None:
         if resp == Gtk.ResponseType.OK:
@@ -1921,6 +1936,8 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             self._set_color(self._color_before)
         self._color_dlg = None
         dlg.destroy()
+        # 解冻：恢复焦点与事件处理
+        self._modal_open = False
         self._focus_guard = False
         self.win.present()
         self.area.grab_focus()
@@ -2011,7 +2028,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
     # ------------------------------------------------------------ 键盘
 
     def _on_key(self, _w, event) -> bool:
-        if self._closed:
+        if self._closed or self._modal_open:
             return False
         kv = event.keyval
         ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
