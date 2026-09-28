@@ -206,6 +206,33 @@ snapctrlalt.sh            源码目录启动脚本
 scrot / maim / ImageMagick `import`，命中就交给它；起不来则回落到内置覆盖层。
 每种情况都会打印原因，不会静默失败。
 
+## 发布与分发
+
+```bash
+./packaging/build-deb.sh
+```
+
+一次产出三样东西到 `dist/`：
+
+| 产物 | 用途 |
+|------|------|
+| `snapctrlalt_<版本>_all.deb` | 直接安装；构建可复现（固定时间戳，两次构建字节一致） |
+| `snapctrlalt-linux.bundle` | **完整 git 历史 + 标签**，推不上去时带走它，在别处 `git clone` 后继续推 |
+| `snapctrlalt-linux-<版本>.tar.gz` | 源码快照，适合做 release 附件 |
+
+`bundle` 的用法（在能联网的机器上）：
+
+```bash
+git clone snapctrlalt-linux.bundle snapctrlalt-linux
+cd snapctrlalt-linux
+git remote set-url origin git@github.com:<你的用户名>/snapctrlalt-linux.git
+git push -u origin master --tags
+```
+
+> 提示：GitHub 上需要**先创建空仓库**（不要勾选 README/.gitignore），否则会报
+> `Repository not found`。用 SSH 推送（`git@github.com:...`）比 HTTPS 省事：
+> 本仓库的维护方式已验证 SSH 密钥可用，HTTPS 则每次都要 token。
+
 ## 开发与测试
 
 ```bash

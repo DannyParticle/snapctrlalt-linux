@@ -208,6 +208,22 @@ echo
 echo "==> contents"
 dpkg-deb --contents "$OUT" | awk '{print "   ", $1, $6}' | head -30
 echo
+# ------------------------------------------------- 离线上传包（可选） ---
+# 没有网络 / 推不上去时，用这两个文件也能把项目带走：
+#   *.bundle    完整的 git 历史与标签，可在任何机器上 clone 后继续推送
+#   *.tar.gz    源码快照（不含历史），适合作为 release 附件
+BUNDLE="$DIST/${PKG}-linux.bundle"
+TARBALL="$DIST/${PKG}-linux-${VERSION}.tar.gz"
+if [ "${SKIP_OFFLINE:-0}" != "1" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "==> offline bundles"
+    git -C "$ROOT" bundle create "$BUNDLE" --all >/dev/null 2>&1 && \
+        echo "    $(basename "$BUNDLE")  $(du -h "$BUNDLE" | cut -f1)（含全部提交与标签）"
+    git -C "$ROOT" archive --format=tar.gz --prefix="${PKG}-linux/" \
+        -o "$TARBALL" HEAD 2>/dev/null && \
+        echo "    $(basename "$TARBALL")  $(du -h "$TARBALL" | cut -f1)（源码快照）"
+fi
+
+echo
 echo "package: $OUT"
 echo "size   : $(du -h "$OUT" | cut -f1)  (installed: ${INSTALLED_SIZE} KiB)"
 echo "sha256 : $(sha256sum "$OUT" | cut -d' ' -f1)"
