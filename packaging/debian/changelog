@@ -1,3 +1,12 @@
+snapctrlalt (1.4.4) unstable; urgency=medium
+
+  * In the vertical layouts the four action buttons were stacked one per row,
+    making a 323x811 strip that took a quarter of the window and squeezed the
+    canvas.  They now use a 2x2 grid (copy and finish span a full row), which
+    frees ~160px of width for the image.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 13:20:00 +0800
+
 snapctrlalt (1.4.3) unstable; urgency=medium
 
   * The vertical toolbar no longer grows taller than the window.  Wrapping

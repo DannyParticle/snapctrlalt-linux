@@ -1126,9 +1126,15 @@ class EditorWindow(AnnotationRenderer):
         btn_cancel = Gtk.Button(label="取消")
         btn_close = Gtk.Button(label="完成")
         btn_close.get_style_context().add_class("suggested-action")
-        for b in (btn_copy, btn_save, btn_cancel):
-            self.bottom.pack_start(b, False, False, 0)
-        self.bottom.pack_end(btn_close, False, False, 0)
+        self.action_buttons = [btn_copy, btn_save, btn_cancel, btn_close]
+        # 竖排时按钮放 2×2 网格；横排时排成一行 —— 见 _layout_actions()
+        self.actions_grid = Gtk.Grid(column_spacing=8, row_spacing=6)
+        self.actions_grid.set_margin_top(6)
+        self.actions_grid.set_margin_bottom(8)
+        self.actions_grid.set_margin_start(10)
+        self.actions_grid.set_margin_end(10)
+        self._actions_vertical: bool | None = None
+        self._layout_actions(False)
         btn_copy.connect("clicked", lambda _b: self.commit("copy"))
         btn_save.connect("clicked", lambda _b: self.commit("save"))
         btn_cancel.connect("clicked", lambda _b: self.cancel())
@@ -1141,6 +1147,25 @@ class EditorWindow(AnnotationRenderer):
         self._apply_layout()
 
     # ------------------------------------------------------------ 摆放
+
+    def _layout_actions(self, vertical: bool) -> None:
+        """操作按钮：横排一行四个；竖排 2×2 网格（不然一条又高又宽的窄条占掉 1/4 窗口）。"""
+        if vertical == self._actions_vertical:
+            return
+        self._actions_vertical = vertical
+        for child in list(self.actions_grid.get_children()):
+            self.actions_grid.remove(child)
+        copy_b, save_b, cancel_b, close_b = self.action_buttons
+        if vertical:
+            self.actions_grid.attach(copy_b, 0, 0, 2, 1)     # 复制占满一行
+            self.actions_grid.attach(save_b, 0, 1, 1, 1)
+            self.actions_grid.attach(cancel_b, 1, 1, 1, 1)
+            self.actions_grid.attach(close_b, 0, 2, 2, 1)    # 完成占满一行
+        else:
+            for i, b in enumerate(self.action_buttons):
+                self.actions_grid.attach(b, i, 0, 1, 1)
+        self.actions_grid.show_all()
+
 
     def _fit_canvas(self, win_w: int, win_h: int) -> None:
         """把图缩到"扣掉工具栏/按钮条之后"剩下的空间里。
@@ -1259,22 +1284,23 @@ class EditorWindow(AnnotationRenderer):
             Gtk.PolicyType.AUTOMATIC if not vertical else Gtk.PolicyType.NEVER,
             Gtk.PolicyType.AUTOMATIC if (not vertical or need_scroll)
             else Gtk.PolicyType.NEVER)
-        self.bottom.set_orientation(
-            Gtk.Orientation.VERTICAL if vertical else Gtk.Orientation.HORIZONTAL)
+        self._layout_actions(vertical)
         if self.placement == "top":
             self.grid.attach(self.bar_scroll, 0, 0, 1, 1)
             self.grid.attach(self.canvas_scroll, 0, 1, 1, 1)
             self.grid.attach(self.bottom, 0, 2, 1, 1)
+            self.grid.attach(self.actions_grid, 0, 3, 1, 1)
         elif self.placement == "bottom":
             self.grid.attach(self.bottom, 0, 0, 1, 1)
+            self.grid.attach(self.actions_grid, 1, 0, 1, 1)
             self.grid.attach(self.canvas_scroll, 0, 1, 1, 1)
             self.grid.attach(self.bar_scroll, 0, 2, 1, 1)
         elif self.placement == "left":
             self.grid.attach(self.bar_scroll, 0, 0, 1, 1)
             self.grid.attach(self.canvas_scroll, 1, 0, 1, 1)
-            self.grid.attach(self.bottom, 2, 0, 1, 1)
+            self.grid.attach(self.actions_grid, 2, 0, 1, 1)
         else:                                    # right
-            self.grid.attach(self.bottom, 0, 0, 1, 1)
+            self.grid.attach(self.actions_grid, 0, 0, 1, 1)
             self.grid.attach(self.canvas_scroll, 1, 0, 1, 1)
             self.grid.attach(self.bar_scroll, 2, 0, 1, 1)
         self.canvas_scroll.set_hexpand(True)

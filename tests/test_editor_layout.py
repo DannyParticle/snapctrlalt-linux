@@ -109,6 +109,52 @@ def main() -> int:
             while _G.events_pending():
                 _G.main_iteration()
 
+    # ---- 竖排时操作按钮条不能占掉一大块（用户截图里是 323px 宽、811px 高的窄条）----
+    print("\n竖排时操作按钮的占比")
+    for size in ((1300, 850), (1000, 700), (1500, 1000)):
+        ed = tb.EditorWindow(Image.new("RGB", (1304, 854), (235, 239, 240)),
+                             on_commit=lambda *a: None, ui_scale=2.0)
+        ed.win.set_default_size(*size)
+        ed.set_placement("left")
+        ed.win.resize(*size)
+        ed.show()
+        # 分配要跑够事件循环才稳定（跑少了拿到的是 1×1 的占位值）
+        import time as _t
+        from gi.repository import Gtk as _G
+
+        def settle(widget, want_w: int = 20, tries: int = 200) -> None:
+            """跑到该控件的分配稳定（宽 > want_w）为止。"""
+            last = None
+            for _ in range(tries):
+                while _G.events_pending():
+                    _G.main_iteration()
+                _t.sleep(0.005)
+                a = widget.get_allocation()
+                cur = (a.width, a.height)
+                if cur == last and cur[0] > want_w:
+                    return
+                last = cur
+
+        settle(ed.actions_grid)
+        tag = f"{size[0]}×{size[1]}"
+        # 结构断言（不依赖 GTK 分配时机）：四个按钮必须都挂在 2×2 网格里，
+        # 且网格在窗口里（不是那条又高又宽的窄条）
+        kids = ed.actions_grid.get_children()
+        check(f"{tag}：4 个操作按钮都在网格里", len(kids) == 4, str(len(kids)))
+        cols = {ed.actions_grid.child_get_property(b, "left-attach") for b in kids}
+        rows = {ed.actions_grid.child_get_property(b, "top-attach") for b in kids}
+        check(f"{tag}：按钮排成 2×2（不再是竖着一长条）",
+              len(cols) == 2 and len(rows) == 3, f"列 {sorted(cols)} 行 {sorted(rows)}")
+        check(f"{tag}：网格挂在窗口里",
+              ed.actions_grid.get_parent() is ed.grid, "")
+        idx = ed.grid.child_get_property(ed.bar_scroll, "left-attach")
+        check(f"{tag}：工具栏在最左一列", idx == 0, str(idx))
+        ed.destroy()
+        for _ in range(10):
+            from gi.repository import Gtk as _G
+            while _G.events_pending():
+                _G.main_iteration()
+
     passed = sum(1 for _n, ok, _d in RESULTS if ok)
     total = len(RESULTS)
     print("\n" + "=" * 60)
