@@ -1,3 +1,18 @@
+snapctrlalt (1.4.2) unstable; urgency=medium
+
+  * Fixed layout 3 (editor window) side switching: the corner buttons were
+    sized from the bar thickness (24px) instead of its length, a row of
+    buttons was never wrapped (so the colour row overlapped the tool row in
+    the vertical layouts), and the vertical bar length was derived from the
+    bar thickness (454px instead of 1486px).
+  * ToolbarState.set_vertical() now recomputes sizes and re-places buttons
+    instead of only transposing coordinates.
+  * New tests/test_editor_layout.py: 128 checks across four sides and four
+    ui_scale values (orientation, no overflow, corner size/containment, every
+    button hit-testable, no button overlaps, area request matches the bar).
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 10:20:00 +0800
+
 snapctrlalt (1.4.1) unstable; urgency=medium
 
   * Fixed the corner buttons of the toolbar being only 24px tall in the

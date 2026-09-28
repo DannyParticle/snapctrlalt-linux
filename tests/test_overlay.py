@@ -817,6 +817,19 @@ def test_editor_toolbar_placement(app: FakeApp) -> None:
               str(ed.toolbar_area.get_size_request()))
         corners = [b for b in ed.ts.corner_buttons if b.action == "place"]
         check(f"{place}：四角按钮齐备", len(corners) == 4, str(len(corners)))
+        bw, bh = ed.ts.bar_w, ed.ts.bar_h
+        over = [b.kind for b in ed.ts.buttons
+                if not (0 <= b.x and b.x + b.w <= bw and 0 <= b.y and b.y + b.h <= bh)]
+        check(f"{place}：主按钮都不戳出工具栏", not over, str(over[:4]))
+        covered = [b.kind for b in ed.ts.buttons
+                   if any(c.hit(b.x + b.w / 2, b.y + b.h / 2) for c in corners)]
+        check(f"{place}：主按钮没被四角压住", not covered, str(covered[:4]))
+        miss = [b.kind for b in ed.ts.buttons
+                if ed.ts.at(b.x + b.w / 2, b.y + b.h / 2) is not b]
+        check(f"{place}：主按钮都点得到", not miss, str(miss[:4]))
+        small = [c.data for c in corners if min(c.w, c.h) < 15 * ed.ts.ui_scale]
+        check(f"{place}：四角按钮够大", not small,
+              f"{[(c.data, round(c.w)) for c in corners]}")
         went = []
         for c in corners:
             ed.ts.hover = None

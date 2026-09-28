@@ -183,38 +183,150 @@ class ToolbarState:
                 sum(sum(b.w for b in g) + gap * (len(g) - 1) for g in groups)
                 + sep * (len(groups) - 1))
 
-        content_w = max(row_widths or [0.0])
-        self.bar_h = pad * 2 + row_h * len(rows_groups) - ROW_GAP * us
-        # 四角按钮占着两端，内容居中时要避开（否则首尾按钮点不到）
-        self.inset = 2.0 * max(6.0 * us, content_w * 0.028)
-        self.bar_w = pad * 2 + 2 * self.inset + content_w
+        self.content_w = max(row_widths or [0.0])
+        self.stack_h = pad * 2 + row_h * len(rows_groups) - ROW_GAP * us
+        self._row_geom = (rows_groups, row_widths, pad, gap, sep, row_h)
+        # 四角按钮的边长按"沿条方向的长度"算。**横排基准**下就是整条宽 ——
+        # 早期这里用内容宽算，横排得到 66px、竖排只有 24px，用户点不到就说
+        # "边切不过去"。现在统一走 _recompute_inset()。
+        self.inset = 0.0
+        self._recompute_inset()
+        self.bar_w = pad * 2 + 2 * self.inset + self.content_w
+        self.bar_h = self.stack_h
+        self._place_buttons()
 
-        # 逐排、逐组摆放；每排内容在条内居中，两排不会左右参差
+    @staticmethod
+    def _wrap(groups, limit: float, gap: float, sep: float) -> list[list]:
+        """把一排按钮按长度上限切段（保持分组，组内不被拆开）。
+
+        竖排时"一排"要沿条的方向铺开，而条长有限：塞不下就得折行。
+        横排时内容宽度是照着窗口算的，一般不折；窄窗口里同样受益。
+        """
+        out: list[list] = []
+        cur: list = []
+        used = 0.0
+        for g in groups:
+            glen = sum(b.w for b in g) + gap * (len(g) - 1)
+            extra = glen + (sep if cur else 0.0)
+            if cur and used + extra > limit:
+                out.append(cur)
+                cur, used = [], 0.0
+                extra = glen
+            cur.append(list(g))
+            used += extra
+        if cur:
+            out.append(cur)
+        return out
+
+    def _line_len(self, line, gap: float, sep: float) -> float:
+        return sum(sum(b.w for b in g) + gap * (len(g) - 1) for g in line) \
+            + sep * (len(line) - 1)
+
+    # ---------------------------------------------------------------- 尺寸
+
+    def _canonical_len(self) -> float:
+        """"沿条方向"的长度：横排=整条宽，竖排=整条高。"""
+        return self.bar_w if not self.vertical else self.bar_h
+
+    def _recompute_inset(self) -> None:
+        """按当前朝向重算四角按钮边长（= 内容两端给它留出的位置）。
+
+        横排基准值由内容宽推出；竖排时整条变长（高），四角也跟着变大。
+        """
+        us = self.ui_scale
+        base = 2.0 * max(6.0 * us, self.content_w * 0.028)
+        if not self.vertical:
+            self.inset = base
+        else:
+            # 竖排后的条长 = 横排的整条宽（含它自己的 inset），不是 stack_h ——
+            # stack_h 是"条的厚度"，早期拿它当长度算，竖排条被压成 353px。
+            horiz_len = getattr(self, "_h_len", 0.0) or (
+                2 * base + self.content_w + 2 * PAD * us)
+            self.inset = 2.0 * max(6.0 * us, horiz_len * 0.028)
+
+    def _place_buttons(self) -> None:
+        """按当前朝向把按钮摆好，必要时**折行**。
+
+        * 横排：按钮排成若干行（沿 y 叠），一行放不下就往下折；
+        * 竖排：按钮排成若干列（沿 x 叠），一列放不下就向右折。
+
+        两排（工具 / 颜色收尾）在横排时是两行、在竖排时是两段，都可能折成多行；
+        折出来的所有行统一按"沿条方向"依次排开，行与行之间不重叠。
+        早期没做折行：竖排时一排 1336px 硬塞进 1486px 高的条里，颜色那排直接压到
+        工具那排上，表现就是"有些按钮点不到、有的被四角盖住"。
+        """
+        rows_groups, row_widths, pad, gap, sep, row_h = getattr(
+            self, "_row_geom", ([], [], 0.0, 0.0, 0.0, 0.0))
+        if not rows_groups:
+            self.rows, self.buttons = [], []
+            return
+        vertical = self.vertical
+        along = self.bar_h if vertical else self.bar_w
+        limit = max(40.0, along - 2 * (pad + self.inset))
+        col_step = max((b.h for b in self.buttons), default=row_h)
+
         self.rows = []
-        for ri, groups in enumerate(rows_groups):
-            x = pad + self.inset + (content_w - row_widths[ri]) / 2.0
-            y = pad + ri * row_h
-            for gi, g in enumerate(groups):
-                for b in g:
-                    b.x, b.y = x, y
-                    x += b.w + gap
-                x -= gap
-                if gi != len(groups) - 1:
-                    x += sep
-            self.rows.append([b for g in groups for b in g])
+        lines: list[list] = []                   # [(line, kind_axis)]
+        for groups in rows_groups:
+            for line in self._wrap(groups, limit, gap, sep):
+                lines.append(line)
+
+        if not vertical:
+            y = pad
+            for line in lines:
+                x = pad + self.inset + (limit - self._line_len(line, gap, sep)) / 2.0
+                for gi, g in enumerate(line):
+                    for b in g:
+                        b.x, b.y = x, y
+                        x += b.w + gap
+                    x -= gap
+                    if gi != len(line) - 1:
+                        x += sep
+                self.rows.append([b for g in line for b in g])
+                y += row_h
+        else:
+            x = pad
+            for line in lines:
+                span = self._line_len(line, gap, sep)
+                y = along / 2.0 - span / 2.0
+                for gi, g in enumerate(line):
+                    for b in g:
+                        b.x, b.y = x, y
+                        y += b.h + gap
+                    y -= gap
+                    if gi != len(line) - 1:
+                        y += sep
+                self.rows.append([b for g in line for b in g])
+                x += col_step + gap
         self.buttons = [b for r in self.rows for b in r]
 
     # ---------------------------------------------------------------- 旋转
 
     def set_vertical(self, vertical: bool) -> None:
-        """切成竖排 / 横排。就地交换每个按钮的 x/y 与宽高，并交换整条宽高。"""
-        if bool(vertical) == self.vertical or not self.buttons:
+        """切成竖排 / 横排：交换整条宽高、重算四角边长、重摆按钮并重建四角按钮。
+
+        只交换宽高、不重算 inset 是不行的 —— 竖排的条长（高）比横排的条宽短得多，
+        四角按钮会跟着缩水（实测横排 75px、竖排 24px，用户点不到）。所以这里
+        一律"重算 + 重摆"，而不是就地转置坐标。
+        """
+        vertical = bool(vertical)
+        if vertical == self.vertical or not self.buttons:
             return
-        self.vertical = bool(vertical)
-        for b in self.buttons:
-            b.x, b.y = b.y, b.x
-            b.w, b.h = b.h, b.w
+        self._h_len = self.bar_w          # 记住横排条长：竖排的条长就是它
+        self.vertical = vertical
         self.bar_w, self.bar_h = self.bar_h, self.bar_w
+        # 转置：每个按钮的宽高互换（横排的两排 → 竖排的两列）
+        for b in self.buttons:
+            b.w, b.h = b.h, b.w
+        self._recompute_inset()
+        # 条长按 inset 调整：横排看宽、竖排看高。
+        # 竖排条长 = **横排的整条宽**（内容 + 两倍 inset）—— stack_h 是"条的厚度"，
+        # 拿它当长度会把竖排条压成 454px（实测）。
+        if not vertical:
+            self.bar_w = 2 * self.inset + self.content_w + 2 * PAD * self.ui_scale
+        else:
+            self.bar_h = self._h_len + 2 * self.inset
+        self._place_buttons()
         self._build_corners()
         self.hover = None
 
@@ -224,8 +336,11 @@ class ToolbarState:
         尺寸取 min(0.34*宽, 0.34*高)，四个角各占一个，互不重叠；吸附到边的那些
         按钮都用不上的角落因此变成了功能入口（教师白板工具栏的常见做法）。
         """
-        base = max(6.0 * self.ui_scale, self.bar_w * 0.028)
-        side = 2.0 * base                     # 边长：四个角各占一个，互不重叠
+        # 边长直接用布局算好的 inset（与"内容给它留出的位置"必须同一个数）。
+        # 早期这里自己拿 bar_w * 0.028 重算：竖排时 bar_w 是"条的厚度"，
+        # 算出来只有 24px —— 编辑器窗口里就是这个问题。
+        side = float(getattr(self, "inset", 0.0) or
+                     2.0 * max(6.0 * self.ui_scale, self.content_w * 0.028))
         w, h = self.bar_w, self.bar_h
         specs = [
             ("place", "把工具栏移到上边（横排）", "place", "top", 0.0, 0.0),
