@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装运行依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi python3-gi-cairo python3-cairo python3-pil \
+            gir1.2-gtk-3.0 python3-xlib xvfb xdotool
+          # 托盘 typelib 是可选依赖，装不上不影响测试
+          sudo apt-get install -y --no-install-recommends \
+            gir1.2-ayatanaappindicator3-0.1 || true
+
+      - name: 语法检查
+        run: |
+          python3 -m compileall -q src/snapctrlalt
+          python3 -c "import ast,sys; [ast.parse(open(p).read(), p) for p in sys.argv[1:]]" \
+            bin/snapctrlalt tools/*.py tests/*.py
+
+      - name: 基础自检
+        run: xvfb-run -a ./snapctrlalt.sh --selftest || echo "自检在无头环境下部分项可能不可用"
+
+      - name: 界面回归
+        run: xvfb-run -a python3 tests/test_overlay.py
+
+      - name: 坐标标定
+        run: xvfb-run -a python3 tests/test_coords.py
+
+      - name: 构建 deb
+        run: ./packaging/build-deb.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb

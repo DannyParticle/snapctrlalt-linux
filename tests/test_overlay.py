@@ -571,8 +571,12 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="snapctrlalt-test-"))
     app = FakeApp(tmp)
     print(f"SnapCtrlAlt Linux 界面回归测试（临时目录 {tmp}）")
-    # 覆盖层构造需要 GTK 初始化
-    Gtk.init_check(sys.argv[:1])
+    # 覆盖层构造需要 GTK 初始化；无显示（CI 未起 Xvfb）时优雅跳过
+    ok, _argv = Gtk.init_check(sys.argv[:1])
+    if not ok:
+        print("\n没有可用的图形显示（DISPLAY 未设置？），跳过界面回归测试。")
+        print("提示：CI 里请用 xvfb-run -a python3 tests/test_overlay.py")
+        return 0
 
     for fn in (test_selection_flow, test_result_matches_selection, test_each_tool,
                test_undo_redo_clear, test_text_entry_flow, test_clip_inside_selection,

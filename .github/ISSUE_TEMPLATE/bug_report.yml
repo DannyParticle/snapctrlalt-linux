@@ -1,0 +1,47 @@
+name: Bug 报告
+description: 截图、标注、坐标或托盘功能异常
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量附上 `python3 tools/diagnose.py` 的输出 —— 它会打印抓图尺寸、
+        X11 根窗口尺寸与指针映射，多数坐标类问题看一眼就能定位。
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你做了什么、期望怎样、实际怎样
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 运行 ./snapctrlalt.sh
+        2. 按 Ctrl+Alt+D
+        3. 拖出选区……
+    validations:
+      required: true
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: diagnose.py 输出
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      placeholder: Linux Mint 22.3 / Cinnamon / X11 / 2880x1800 @2x / 单屏
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: snapctrlalt --version 的输出
+    validations:
+      required: true

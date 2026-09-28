@@ -181,7 +181,7 @@ def test_real_capture_alignment() -> None:
     from snapctrlalt import capture_linux as capture
 
     if not capture.has_x11():
-        check("X11 可用", False, "无 X11，跳过")
+        print("  无 X11（纯 Wayland 或无显示），跳过真实抓图比对")
         return
     try:
         info = capture.virtual_screen_bounds()
@@ -269,6 +269,24 @@ def test_real_capture_alignment() -> None:
 
 def main() -> int:
     print("SnapCtrlAlt 坐标标定回归测试")
+    # 部分用例要构造 GTK 窗口；无显示时只跑纯数学部分
+    ok, _argv = Gtk.init_check(sys.argv[:1])
+    if not ok:
+        print("  没有可用的图形显示，仅运行纯数学用例（跳过真实抓图部分）")
+        for fn in (test_rect_conversion, test_pointer_self_check,
+                   test_virtual_screen_offset, test_extreme_fractional_scaling,
+                   test_geometry_report):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                import traceback
+
+                RESULTS.append((fn.__name__, False, "异常"))
+                print(f"  ✗ {fn.__name__} 抛异常\n{traceback.format_exc()}")
+        passed = sum(1 for _n, o, _d in RESULTS if o)
+        total = len(RESULTS)
+        print(f"\n通过 {passed}/{total}（纯数学部分）")
+        return 0 if passed == total else 1
     for fn in (test_rect_conversion, test_pointer_self_check,
                test_virtual_screen_offset, test_extreme_fractional_scaling,
                test_geometry_report, test_real_capture_alignment):
