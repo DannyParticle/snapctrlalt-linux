@@ -854,6 +854,25 @@ class App:
         grid4.attach(chk_primary, 1, row[0], 1, 1)
         row[0] += 1
 
+        # 工具栏形态：覆盖层上 / 编辑器窗口（Ctrl+E 也能随时切）
+        combo_tb = Gtk.ComboBoxText()
+        for cid, label in (("canvas", "画在覆盖层上（紧贴选区，推荐）"),
+                           ("editor", "选完区域后开编辑器窗口")):
+            combo_tb.append(cid, label)
+        cur_tb = str(self.cfg.get("toolbar_mode", "canvas") or "canvas").lower()
+        combo_tb.set_active_id(cur_tb if cur_tb in ("canvas", "editor") else "canvas")
+        add_row(grid4, "工具栏形态", combo_tb,
+                "覆盖层里按 Ctrl+E 也可以在两者之间切换")
+
+        chk_mask_dbg = Gtk.CheckButton(
+            label="调试：启用方案二（独立窗口浮在遮罩上，已知不可用）")
+        chk_mask_dbg.set_active(bool(self.cfg.get("toolbar_mask_debug", False)))
+        chk_mask_dbg.set_tooltip_text(
+            "该形态实测既不显示也收不到点击（窗口管理器不允许后台程序把窗口提到"
+            "活动窗口之上）。打开只为复现该问题。")
+        grid4.attach(chk_mask_dbg, 1, row[0], 1, 1)
+        row[0] += 1
+
         # ---- 底部按钮 ----
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         actions.set_margin_top(12)
@@ -934,6 +953,8 @@ class App:
             self.cfg["save_format"] = combo_fmt.get_active_id() or "png"
             self.cfg["delay"] = int(spin_delay.get_value())
             self.cfg["ui_scale"] = combo_ui.get_active_id() or "auto"
+            self.cfg["toolbar_mode"] = combo_tb.get_active_id() or "canvas"
+            self.cfg["toolbar_mask_debug"] = chk_mask_dbg.get_active()
             self.cfg["show_tray"] = chk_tray.get_active()
             self.cfg["notify"] = chk_notify.get_active()
             self.cfg["copy_to_primary"] = chk_primary.get_active()
@@ -964,6 +985,8 @@ class App:
             combo_fmt.set_active_id(d["save_format"])
             spin_delay.set_value(d["delay"])
             combo_ui.set_active_id(d["ui_scale"])
+            combo_tb.set_active_id(d["toolbar_mode"])
+            chk_mask_dbg.set_active(d["toolbar_mask_debug"])
             chk_tray.set_active(d["show_tray"])
             chk_notify.set_active(d["notify"])
             chk_primary.set_active(d["copy_to_primary"])

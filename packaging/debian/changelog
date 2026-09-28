@@ -1,3 +1,19 @@
+snapctrlalt (1.3.5) unstable; urgency=medium
+
+  * The overlay now re-checks the image-to-canvas scale against the measured
+    window size when it opens.  A first launch (autostart, or right after login
+    before X is settled) can fail to read the root window and fall back to the
+    wrong scale, which showed up as the whole capture being offset; the ratio is
+    now corrected automatically and the change is logged.
+  * The settings window gained a "toolbar presentation" dropdown (overlay or
+    editor window), equivalent to Ctrl+E, and an explicit debug switch for the
+    mask variant, which is known not to work.
+  * Documented all three toolbar presentations in the README, including why the
+    mask variant is disabled and the exact configuration needed to re-enable it
+    for debugging.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Mon, 28 Sep 2026 23:00:00 +0800
+
 snapctrlalt (1.3.4) unstable; urgency=medium
 
   * The toolbar in the editor window was smaller than the one in the overlay:

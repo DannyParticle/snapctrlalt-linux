@@ -541,11 +541,18 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         # 全屏覆盖层之上时既不会被绘制、也收不到鼠标点击（窗口管理器不允许后台
         # 程序把自己的窗口提到活动窗口之上）。所以直接拒绝，回退到画布形态，
         # 而不是留一条看起来能选、实际不工作的路径。
-        if self._tb_mode in ("mask", "window", "float") or _cfg.get("separate_toolbar"):
-            print("[overlay] toolbar_mode=mask 已停用（独立窗口压在覆盖层上不可用），"
-                  "改用 canvas", flush=True)
+        wants_mask = (self._tb_mode in ("mask", "window", "float")
+                      or bool(_cfg.get("separate_toolbar")))
+        if wants_mask and not _cfg.get("toolbar_mask_debug"):
+            print("[overlay] toolbar_mode=mask 已停用（独立窗口压在覆盖层上既不被绘制、"
+                  "也收不到点击）。要复现这个问题请设 toolbar_mask_debug=true，"
+                  "详见 README 的「方案二」一节。", flush=True)
             self._tb_mode = "canvas"
-        self._use_sep_toolbar = False
+            wants_mask = False
+        elif wants_mask:
+            print("[overlay] 注意：正在使用 toolbar_mask_debug —— 方案二已知不可用，"
+                  "工具栏会不显示、也点不到，仅供调试。", flush=True)
+        self._use_sep_toolbar = wants_mask
         self._tb_window = None
         # 画布坐标系 = X11 根像素（与 GTK 事件坐标同源，绘制 1:1 不重采样）
         self.cr_w = max(1, int(self.geo.root_w))
@@ -724,6 +731,41 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         except Exception:  # noqa: BLE001
             return False
 
+    def _reconcile_scale(self, win_w: int, win_h: int) -> None:
+        """用实测窗口尺寸复核「图像像素 ÷ 画布像素」这个比例。
+
+        窗口铺满屏幕时，它的尺寸就等于画布应有的像素尺寸；拿它和抓图尺寸一比
+        就知道缩放对不对。不对就按实测值修正（宁可自愈，也不要让用户看到偏移），
+        并把前后值打进日志 —— 这样偶发问题下一次会留下证据。
+        """
+        if win_w <= 0 or win_h <= 0:
+            return
+        want = self.img_w / float(win_w)
+        got = self.geo.zoom_x
+        if abs(want - got) < 0.02:
+            return
+        old_zoom, old_canvas = got, self.cr_w
+        self.scale_ratio = want
+        self.cr_w = max(1, int(round(self.img_w / want)))
+        self.cr_h = max(1, int(round(self.img_h / want)))
+        disp_img = self.screen
+        if (self.cr_w, self.cr_h) != (self.img_w, self.img_h):
+            disp_img = self.screen.resize((self.cr_w, self.cr_h), Image.LANCZOS)
+        self.disp_surface = pil_to_surface(disp_img.convert("RGB"))
+        self._dim = None                      # 压暗层要跟着重建
+        img = self.area.get_window()
+        del img
+        self.area.set_size_request(self.cr_w, self.cr_h)
+        print(f"[overlay] 缩放自校正：画布 {old_canvas} → {self.cr_w}"
+              f"（缩放 {old_zoom:.3f} → {want:.3f}，实测窗口 {win_w}×{win_h}，"
+              f"抓图 {self.img_w}×{self.img_h}）", flush=True)
+        self.geo.notes.append(
+            f"缩放自校正 画布 {old_canvas}→{self.cr_w}（{old_zoom:.3f}→{want:.3f}）")
+
+    def scale_ratio_changed(self) -> bool:
+        """供测试查询是否发生过自校正。"""
+        return bool(getattr(self, "_scale_fixed", False))
+
     def _x11_focus(self) -> bool:
         """用 Xlib 直接把输入焦点给覆盖层窗口（不依赖窗口管理器配合）。"""
         if self._focus_guard or self._closed:
@@ -805,6 +847,11 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             wx, wy, ww, wh = geom
             self.geo.win_x, self.geo.win_y = wx, wy
             self.geo.win_w, self.geo.win_h = ww, wh
+            # 用实测的窗口尺寸**复核缩放**：首次启动（开机自启、X 刚就绪）时
+            # 有可能量不到根窗口而回退，导致 image↔canvas 的比例不对 —— 那正是
+            # 「偶发整体偏移」的形态。这里按实际铺满屏幕的窗口尺寸校正一次，
+            # 并把结论写进日志，避免它静默发生。
+            self._reconcile_scale(ww, wh)
             if (wx, wy) != (0, 0) or (ww, wh) != (self.geo.root_w, self.geo.root_h):
                 self.geo.notes.append(
                     f"覆盖层窗口实测 {ww}×{wh}+{wx}+{wy}，"

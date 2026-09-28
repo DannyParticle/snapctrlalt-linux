@@ -652,6 +652,35 @@ def test_toolbar_follows_selection(app: FakeApp) -> None:
     o.win.destroy()
 
 
+def test_scale_reconciliation(app: FakeApp) -> None:
+    """开屏时用实测窗口尺寸复核缩放（针对「偶发整体偏移」）。
+
+    首次启动（开机自启、X 刚就绪）时有可能量不到根窗口而回退，导致
+    image↔canvas 比例不对 —— 表现就是整体偏移。这里验证自校正会按实测
+    修正画布尺寸，并在窗口与抓图一致时保持不动。
+    """
+    print("\n[18] 缩放自校正")
+    from snapctrlalt.geometry import Geometry  # noqa: PLC0415
+
+    W, H = 2880, 1800
+    img = make_screen(W // 8, H // 8, 1)
+
+    # 情形 A：标定把缩放当成 1（画布 = 抓图），但窗口实测只有一半 → 应校正为 2
+    geo = Geometry(img_w=W, img_h=H, root_w=W, root_h=H, win_w=W, win_h=H)
+    o = TestOverlay(app, img, (0, 0, W, H), on_close=lambda r: None, geo=geo)
+    o._reconcile_scale(W // 2, H // 2)
+    check("窗口只有一半时按实测校正画布", o.cr_w == W // 2,
+          f"画布 {o.cr_w}（期望 {W // 2}）")
+    o.win.destroy()
+
+    # 情形 B：窗口与抓图一致 → 不应改动
+    geo2 = Geometry(img_w=W, img_h=H, root_w=W, root_h=H, win_w=W, win_h=H)
+    o2 = TestOverlay(app, img, (0, 0, W, H), on_close=lambda r: None, geo=geo2)
+    o2._reconcile_scale(W, H)
+    check("窗口与抓图一致时不动画布", o2.cr_w == W, f"画布 {o2.cr_w}")
+    o2.win.destroy()
+
+
 def test_cancel(app: FakeApp) -> None:
     print("\n[11] 取消")
     reasons: list[str] = []
@@ -705,7 +734,8 @@ def main() -> int:
                test_persist_and_finish, test_pin, test_toolbar_click_does_not_reset_selection,
                test_handles_work_with_any_tool, test_toolbar_reachable_for_any_selection,
                test_construction_smoke, test_editor_window,
-               test_toolbar_follows_selection, test_cancel):
+               test_toolbar_follows_selection, test_scale_reconciliation,
+               test_cancel):
         try:
             fn(app)
         except Exception:  # noqa: BLE001
