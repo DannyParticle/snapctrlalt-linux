@@ -3,7 +3,7 @@
 Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴板。交互对标 QQ 截图，
 界面用 GTK3 + Cairo，抓图走 X11（Xlib / GDK），除系统自带的 Python 库外不需要编译任何东西。
 
-> 状态：**beta**（1.3.0 是第一个对外版本；1.0.0–1.2.5 为内部 alpha）。
+> 状态：**beta**（`1.5.2`；1.3.0 是第一个对外版本，1.0.0–1.2.5 为内部 alpha）。
 >
 > 这是 Windows 项目 [SnapCtrlAlt](https://gitee.com/DannyParticle/SnapCtrlAlt) 的 Linux 版移植，
 > 保留了它的全部交互设计（工具集、工具栏、快捷键、放大镜、贴图、托盘分流逻辑），
@@ -35,7 +35,7 @@ Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴
 | 马赛克 / 高斯模糊 | 遮挡敏感信息 |
 | 取色 | 读出画面颜色并设为当前描边色 |
 | 颜色 | 点色环展开**工具栏自带的取色面板**：`R`/`G`/`B` 渐变滑块 + 灰度（亮度）滑块 + 12 个常用色 + 取色器，面板与工具栏同宽、不会超出 |
-| 临时切换 | 覆盖层里按 `Ctrl+E` 可切到方案③（编辑器窗口）；工具栏上的「临时切换」按钮**已收掉**（实测点不动，见 CHANGELOG 1.5.1） |
+| 临时切换 | `Ctrl+E` 在 **①↔③ 之间双向切换**（覆盖层里切到编辑器、编辑器里切回覆盖层），画好的标注与选区一起带过去 |
 | 换边 / 沿边滑动 | 点工具栏四角的小三角可把整条贴到上/下/左/右（贴左右时自动竖排）；按住条上的空白处拖动可沿边滑动，永远不出屏幕 |
 | 撤销 / 重做 / 清空 / 另存为 / 贴图 / 取消 / 完成 | 收尾操作 |
 
@@ -72,7 +72,7 @@ Linux 截图小工具：按 `Ctrl+Alt+D` 全局唤起，框选标注后进剪贴
 
 ```bash
 ./packaging/build-deb.sh                 # 产物在 dist/snapctrlalt_<版本>_all.deb
-sudo apt install ./dist/snapctrlalt_1.3.0_all.deb
+sudo apt install ./dist/snapctrlalt_1.5.2_all.deb
 ```
 
 装完在应用菜单里搜「截图工具」，或直接敲 `snapctrlalt`。
@@ -186,8 +186,9 @@ python3 tools/perf.py          # 帧耗时基准
 
 `Ctrl+E`（或工具栏上的窗口图标）把当前选区结果交给一个普通窗口继续标注：
 
-- 滚轮缩放（0.1×~8×）；工具栏尺寸只跟屏幕 UI 缩放走（与 ① 一致，都是 1204×152），
+- 滚轮缩放（0.1×~8×）；工具栏尺寸只跟屏幕 UI 缩放走（与 ① 一致，本机 1336×152），
   与截图尺寸无关；窗口偏窄时横向滚动而不是缩小工具栏
+- 工具栏可贴四条边（点四角小三角换边），操作按钮跟着挪到对面；竖排时按钮排成 2×2
 - 工具栏与覆盖层共用同一套形状语义（`AnnotationRenderer`），行为一致
 - `Enter` / 完成 → 复制到剪贴板；另有「另存为…」「取消」
 - `Ctrl+Z` / `Ctrl+Shift+Z` 撤销重做，`Esc` 取消
@@ -262,6 +263,10 @@ python3 tools/perf.py          # 帧耗时基准
 | `delay` | `0` | 托盘「延时截图」用的秒数 |
 | `save_format` | `png` | 自动保存格式：`png` / `jpg` |
 | `jpeg_quality` | `95` | JPEG 质量 |
+| `reselect_on_empty` | `false` | 点选区外时重新框选（关掉后选好的区域不会被误清） |
+| `toolbar_place` | `auto` | 工具栏贴哪条边：`auto` / `top` / `bottom` / `left` / `right` |
+| `toolbar_mode` | `canvas` | 工具栏形态：`canvas`（方案①）/ `editor`（方案③） |
+| `ui_scale` | `auto` | 覆盖层 UI 缩放（只影响工具栏/放大镜大小，不影响截图） |
 
 Windows 版的 `config.json` 可以直接拿来用（`prefer_qq` / `qq_hotkey` 会自动映射）。
 
@@ -279,7 +284,8 @@ share/icons/hicolor/      各尺寸图标 + scalable SVG
 packaging/build-deb.sh    构建 deb（不依赖 debhelper，可复现）
 packaging/debian/         control / changelog / copyright / postinst / prerm / postrm
 tests/                    回归、坐标专项与端到端测试
-tools/                    make_icons / diagnose / perf
+tools/                    make_icons / diagnose / perf / restart_resident / version_audit
+                          verify_color_panel / verify_placement / verify_live_ui（真机核验）
 install.sh                用户级安装（~/.local）
 snapctrlalt.sh            源码目录启动脚本
 ```
@@ -337,12 +343,15 @@ git push -u origin master --tags
 ## 开发与测试
 
 ```bash
-python3 tests/test_overlay.py     # 界面回归：54 项，离屏跑真实覆盖层对象
-python3 tests/test_coords.py      # 坐标专项：36 项，含「框选==截取」逐像素验证
-python3 tests/test_gui_e2e.py     # 端到端 28 项：真窗口 + XTEST 真鼠标框选/画标注 + 真剪贴板（约 25 秒）
+python3 tests/test_overlay.py         # 界面回归：267 项，离屏跑真实覆盖层对象
+python3 tests/test_coords.py          # 坐标专项：37 项，含「框选==截取」逐像素验证
+python3 tests/test_editor_layout.py   # 方案③ 工具栏摆放：175 项（四方向 × 四种 ui_scale）
+python3 tests/test_gui_e2e.py         # 端到端 29 项：真窗口 + XTEST 真鼠标框选/画标注 + 真剪贴板（约 25 秒）
 ./snapctrlalt.sh --selftest       # 基础自检：配置 / 抓图 / 坐标标定 / 剪贴板 / 热键 / 托盘
 ./snapctrlalt.sh --perf           # 用真实抓图尺寸测各交互路径帧耗时
-./packaging/build-deb.sh          # 构建 deb（构建前自动跑 overlay + coords 测试）
+./packaging/build-deb.sh              # 构建 deb（构建前自动跑 overlay + coords 测试）
+python3 tools/restart_resident.py     # 常驻实例是不是在跑当前代码（改了代码没生效时先看它）
+python3 tools/version_audit.py        # 版本号六处体检（源码 / deb / tar / CHANGELOG / 已装 / tag）
 ```
 
 `tests/test_coords.py` 是这次偏移问题的专用防护：它覆盖 1×/1.25×/1.5×/1.75×/2×/3×
@@ -380,6 +389,10 @@ python3 tests/test_gui_e2e.py     # 端到端 28 项：真窗口 + XTEST 真鼠�
 - 个别窗口管理器对「抢焦点」有限制，若 Enter/Esc 不响应，点一下画面即可（程序也会自动重试）
 - 没有剪贴板管理器时，剪贴板内容在本进程退出后失效（Gtk 剪贴板的选区所有者模型）
 - 视频播放器 / 硬件覆盖层（X11 overlay plane）里的画面可能抓成黑块，这是 X11 的固有限制
+- 方案①/③ 工具栏上原本有个「临时切换」按钮，实测**点不动**，已按开关收起
+  （`settings.MODE_SWITCH_BUTTON`，默认 `False`）；请用 `Ctrl+E`。
+  标注搬运（切换时保留已画内容）在 1.5.0 加入
+- 触屏设备上没有实测过（开发机只有触控板），多点手势未实现
 
 ## 许可与作者
 
@@ -388,18 +401,18 @@ python3 tests/test_gui_e2e.py     # 端到端 28 项：真窗口 + XTEST 真鼠�
 
 ## 版本与发布
 
-版本号只在**发布**时变：`1.3.0` – `1.3.12` 是 beta 线（每版都有 tag，可回溯），
-下一批功能进 `1.4.0`；改 bug / 补测试不单独升版本。
+版本号只在**发布**时变：`1.3.0` – `1.3.12`、`1.4.0` – `1.4.5`、`1.5.0` 起
+   都是 beta 线（每版都有 tag，可回溯）；改 bug / 补测试不单独升版本。
 
 改版本号要同时改三处（`packaging/build-deb.sh` 会校验，不一致直接拒绝构建）：
 `src/snapctrlalt/__init__.py`、`CHANGELOG.md`、`packaging/debian/changelog`。
-改完先提交，再 `git tag -a vX.Y.Z-beta`（tar 快照取自 HEAD）。
+改完先提交，再 `git tag -a vX.Y.Z`（tar 快照取自 HEAD）。
 
 ```bash
 python3 tools/version_audit.py                 # 六处版本号体检
 ./packaging/build-deb.sh                       # 构建（含测试）
-git checkout v1.3.10-beta                      # 需要旧版本时从 tag 重建
-./packaging/build-deb.sh --version 1.3.10 --no-tests
+git checkout v1.4.0                            # 需要旧版本时从 tag 重建
+./packaging/build-deb.sh --version 1.4.0 --no-tests
 ```
 
 产物都放在 `dist/`（deb、源码 tar.gz、含全部历史的 git bundle），`build/` 是中间目录，
