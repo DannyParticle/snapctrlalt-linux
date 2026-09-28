@@ -1,3 +1,12 @@
+snapctrlalt (1.3.6) unstable; urgency=medium
+
+  * The settings dialog is now split into three tabs (hotkeys and capture,
+    interface and startup, about).  As options accumulated the single page grew
+    tall enough to push the window past the screen; each tab scrolls instead and
+    the window keeps a fixed size.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 00:10:00 +0800
+
 snapctrlalt (1.3.5) unstable; urgency=medium
 
   * The overlay now re-checks the image-to-canvas scale against the measured

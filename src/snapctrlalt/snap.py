@@ -686,10 +686,9 @@ class App:
             return
         win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         win.set_title(APP_TITLE + " · 设置")
-        win.set_default_size(560, -1)
+        win.set_default_size(620, 660)
         win.set_position(Gtk.WindowPosition.CENTER)
         win.set_icon_name("camera-photo")
-        win.set_border_width(0)
         win.connect("destroy", lambda *_: setattr(self, "settings_win", None))
         self.settings_win = win
 
@@ -698,10 +697,10 @@ class App:
 
         # ---- 标题 ----
         header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-        header.set_margin_top(16)
-        header.set_margin_bottom(10)
-        header.set_margin_start(18)
-        header.set_margin_end(18)
+        header.set_margin_top(12)
+        header.set_margin_bottom(8)
+        header.set_margin_start(16)
+        header.set_margin_end(16)
         outer.pack_start(header, False, False, 0)
         title = Gtk.Label()
         title.set_markup(f'<span size="large" weight="bold">{APP_TITLE}</span>')
@@ -712,24 +711,40 @@ class App:
         sub.get_style_context().add_class("dim-label")
         header.pack_start(sub, False, False, 0)
 
-        def section(text: str) -> Gtk.Grid:
+        # ---- 分页 ----
+        # 设置项一多，单页会拉得很长（一屏放不下、找不到东西），所以按用途分栏。
+        nb = Gtk.Notebook()
+        nb.set_margin_start(12)
+        nb.set_margin_end(12)
+        # 限制高度：否则内容会把窗口撑到一千多像素高（一屏放不下）。
+        # 每页内容超出时在该页内滚动。
+        nb.set_size_request(580, 470)
+        outer.pack_start(nb, True, True, 0)
+
+        def make_page(tab_label: str) -> Gtk.Box:
+            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            inner.set_border_width(6)
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroller.add_with_viewport(inner)
+            nb.append_page(scroller, Gtk.Label(label=tab_label))
+            scroller.get_vadjustment().set_value(0)
+            return inner
+
+        def add_section(page: Gtk.Box, text: str) -> tuple[Gtk.Grid, list[int]]:
+            """在页内加一个小节；返回 (网格, 行号计数器)。"""
             lab = Gtk.Label()
             lab.set_markup(f'<b>{GLib.markup_escape_text(text)}</b>')
             lab.set_halign(Gtk.Align.START)
-            lab.set_margin_start(18)
-            lab.set_margin_top(10)
+            lab.set_margin_top(6)
             lab.set_margin_bottom(2)
-            outer.pack_start(lab, False, False, 0)
+            page.pack_start(lab, False, False, 0)
             g = Gtk.Grid(column_spacing=12, row_spacing=8)
-            g.set_margin_start(18)
-            g.set_margin_end(18)
-            g.set_margin_bottom(6)
-            outer.pack_start(g, False, False, 0)
-            return g
+            g.set_margin_bottom(4)
+            page.pack_start(g, False, False, 0)
+            return g, [0]
 
-        row = [0]
-
-        def add_row(grid: Gtk.Grid, label: str, widget: Gtk.Widget,
+        def add_row(grid: Gtk.Grid, row: list, label: str, widget: Gtk.Widget,
                     hint: str | None = None) -> None:
             lab = Gtk.Label(label=label)
             lab.set_halign(Gtk.Align.START)
@@ -747,43 +762,37 @@ class App:
                 grid.attach(h, 1, row[0], 1, 1)
                 row[0] += 1
 
-        # ---- 热键 ----
-        grid = section("热键")
-        holder = Gtk.Box()          # 占位，稍后换成带「录制」按钮的行
-        add_row(grid, "截图热键", holder,
-                "点「录制」后直接按组合键；留空则不注册全局热键（可改用 --once）")
+        def add_check(grid: Gtk.Grid, row: list, widget: Gtk.CheckButton) -> None:
+            grid.attach(widget, 1, row[0], 1, 1)
+            row[0] += 1
 
+        # ================= 第 1 页：热键与截图 =================
+        page1 = make_page("热键与截图")
+
+        g1, r1 = add_section(page1, "全局热键")
+        holder = Gtk.Box()          # 占位，稍后换成带「录制」按钮的行
+        add_row(g1, r1, "截图热键", holder,
+                "点「录制」后直接按组合键；留空则不注册全局热键（可改用 --once）")
         ent_quit = Gtk.Entry()
         ent_quit.set_text(str(self.cfg.get("quit_hotkey", "ctrl+alt+shift+q")))
-        add_row(grid, "退出热键", ent_quit)
+        add_row(g1, r1, "退出热键", ent_quit)
 
         lbl_hotkey_status = Gtk.Label(label="")
         lbl_hotkey_status.set_halign(Gtk.Align.START)
         lbl_hotkey_status.set_xalign(0)
         lbl_hotkey_status.set_line_wrap(True)
         lbl_hotkey_status.get_style_context().add_class("dim-label")
-        grid.attach(lbl_hotkey_status, 1, row[0], 1, 1)
-        row[0] += 1
+        g1.attach(lbl_hotkey_status, 1, r1[0], 1, 1)
+        r1[0] += 1
 
-        def refresh_hotkey_status(*_a) -> None:
-            got = dict(self.hotkeys.status)
-            if not got:
-                lbl_hotkey_status.set_text("尚未注册（保存后生效）")
-                return
-            ok = got.get("shot")
-            lbl_hotkey_status.set_text(
-                f"当前状态：截图热键 {'已生效 ✓' if ok else '注册失败（可能被别的程序占用）'}"
-                f"，退出热键 {'已生效 ✓' if got.get('quit') else '未生效'}")
-
-        # ---- 行为 ----
-        grid2 = section("按 Enter / 点工具栏的复制按钮之后")
+        g2, r2 = add_section(page1, "截完图之后")
         note = Gtk.Label(label="截图始终会复制到剪贴板；下面决定要不要顺便存一份文件。")
         note.set_halign(Gtk.Align.START)
         note.set_xalign(0)
         note.set_line_wrap(True)
         note.get_style_context().add_class("dim-label")
-        grid2.attach(note, 1, row[0], 1, 1)
-        row[0] += 1
+        g2.attach(note, 1, r2[0], 1, 1)
+        r2[0] += 1
 
         combo = Gtk.ComboBoxText()
         for cid, label in (("copy", "只复制到剪贴板（推荐）"),
@@ -792,7 +801,7 @@ class App:
             combo.append(cid, label)
         cur = str(self.cfg.get("after_capture", "copy"))
         combo.set_active_id(cur if cur in ("copy", "copy_save", "save") else "copy")
-        add_row(grid2, "同时", combo)
+        add_row(g2, r2, "同时", combo)
 
         box_dir = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         ent_dir = Gtk.Entry()
@@ -802,83 +811,112 @@ class App:
         btn_dir = Gtk.Button(label="选择…")
         box_dir.pack_start(ent_dir, True, True, 0)
         box_dir.pack_start(btn_dir, False, False, 0)
-        add_row(grid2, "保存目录", box_dir)
+        add_row(g2, r2, "保存目录", box_dir)
 
         combo_fmt = Gtk.ComboBoxText()
         for cid, label in (("png", "PNG（无损，推荐）"), ("jpg", "JPEG")):
             combo_fmt.append(cid, label)
         fmt = str(self.cfg.get("save_format", "png")).lower()
         combo_fmt.set_active_id("jpg" if fmt in ("jpg", "jpeg") else "png")
-        add_row(grid2, "保存格式", combo_fmt)
+        add_row(g2, r2, "保存格式", combo_fmt)
 
         spin_delay = Gtk.SpinButton.new_with_range(1, 30, 1)
         spin_delay.set_value(float(self.cfg.get("delay", 3)))
-        add_row(grid2, "延时截图", spin_delay, "托盘里「延时截图」用的秒数")
+        add_row(g2, r2, "延时截图", spin_delay, "托盘里「延时截图」用的秒数")
 
-        # ---- 外部工具 ----
-        grid3 = section("外部截图工具")
+        g3, r3 = add_section(page1, "外部截图工具")
         chk_ext = Gtk.CheckButton(label="优先交给外部工具（Flameshot / Spectacle 等）")
         chk_ext.set_active(bool(self.cfg.get("prefer_external", True)))
-        grid3.attach(chk_ext, 1, row[0], 1, 1)
-        row[0] += 1
+        add_check(g3, r3, chk_ext)
         ent_ext = Gtk.Entry()
         detected = capture.find_external_tool()
         ent_ext.set_text(str(self.cfg.get("external_cmd", "")))
         ent_ext.set_placeholder_text(f"自动探测：{detected or '未安装'}")
-        add_row(grid3, "自定义命令", ent_ext, "留空则自动探测；填了就优先用它")
+        add_row(g3, r3, "自定义命令", ent_ext, "留空则自动探测；填了就优先用它")
 
-        # ---- 界面 ----
-        grid4 = section("界面与启动")
+        # ================= 第 2 页：界面与启动 =================
+        page2 = make_page("界面与启动")
+
+        g4, r4 = add_section(page2, "外观")
         combo_ui = Gtk.ComboBoxText()
         for cid, label in (("auto", "自动（HiDPI 屏自动放大）"), ("1", "1.0×"),
                            ("1.25", "1.25×"), ("1.5", "1.5×"), ("2", "2.0×")):
             combo_ui.append(cid, label)
         uis = str(self.cfg.get("ui_scale", "auto")).lower()
         combo_ui.set_active_id(uis if uis in ("auto", "1", "1.25", "1.5", "2") else "auto")
-        add_row(grid4, "界面缩放", combo_ui, "只影响工具栏/放大镜的大小，不影响截图")
+        add_row(g4, r4, "界面缩放", combo_ui, "只影响工具栏/放大镜的大小，不影响截图")
 
-        chk_auto = Gtk.CheckButton(label="开机自启")
-        chk_auto.set_active(bool(self.cfg.get("autostart")))
-        grid4.attach(chk_auto, 1, row[0], 1, 1)
-        row[0] += 1
-        chk_tray = Gtk.CheckButton(label="显示托盘图标")
-        chk_tray.set_active(bool(self.cfg.get("show_tray", True)))
-        grid4.attach(chk_tray, 1, row[0], 1, 1)
-        row[0] += 1
-        chk_notify = Gtk.CheckButton(label="显示桌面通知")
-        chk_notify.set_active(bool(self.cfg.get("notify", True)))
-        grid4.attach(chk_notify, 1, row[0], 1, 1)
-        row[0] += 1
-        chk_primary = Gtk.CheckButton(label="同时写入 PRIMARY 选区（中键粘贴）")
-        chk_primary.set_active(bool(self.cfg.get("copy_to_primary", False)))
-        grid4.attach(chk_primary, 1, row[0], 1, 1)
-        row[0] += 1
-
-        # 工具栏形态：覆盖层上 / 编辑器窗口（Ctrl+E 也能随时切）
         combo_tb = Gtk.ComboBoxText()
         for cid, label in (("canvas", "画在覆盖层上（紧贴选区，推荐）"),
                            ("editor", "选完区域后开编辑器窗口")):
             combo_tb.append(cid, label)
         cur_tb = str(self.cfg.get("toolbar_mode", "canvas") or "canvas").lower()
         combo_tb.set_active_id(cur_tb if cur_tb in ("canvas", "editor") else "canvas")
-        add_row(grid4, "工具栏形态", combo_tb,
+        add_row(g4, r4, "工具栏形态", combo_tb,
                 "覆盖层里按 Ctrl+E 也可以在两者之间切换")
 
+        g5, r5 = add_section(page2, "剪贴板")
+        chk_primary = Gtk.CheckButton(label="同时写入 PRIMARY 选区（中键粘贴）")
+        chk_primary.set_active(bool(self.cfg.get("copy_to_primary", False)))
+        add_check(g5, r5, chk_primary)
+
+        g6, r6 = add_section(page2, "启动与提醒")
+        chk_auto = Gtk.CheckButton(label="开机自启")
+        chk_auto.set_active(bool(self.cfg.get("autostart")))
+        add_check(g6, r6, chk_auto)
+        chk_tray = Gtk.CheckButton(label="显示托盘图标")
+        chk_tray.set_active(bool(self.cfg.get("show_tray", True)))
+        add_check(g6, r6, chk_tray)
+        chk_notify = Gtk.CheckButton(label="显示桌面通知")
+        chk_notify.set_active(bool(self.cfg.get("notify", True)))
+        add_check(g6, r6, chk_notify)
+
+        g7, r7 = add_section(page2, "调试")
         chk_mask_dbg = Gtk.CheckButton(
-            label="调试：启用方案二（独立窗口浮在遮罩上，已知不可用）")
+            label="启用方案二（独立窗口浮在遮罩上，已知不可用）")
         chk_mask_dbg.set_active(bool(self.cfg.get("toolbar_mask_debug", False)))
         chk_mask_dbg.set_tooltip_text(
             "该形态实测既不显示也收不到点击（窗口管理器不允许后台程序把窗口提到"
-            "活动窗口之上）。打开只为复现该问题。")
-        grid4.attach(chk_mask_dbg, 1, row[0], 1, 1)
-        row[0] += 1
+            "活动窗口之上）。打开只为复现该问题，需配合工具栏形态使用。")
+        add_check(g7, r7, chk_mask_dbg)
 
-        # ---- 底部按钮 ----
+        # ================= 第 3 页：关于 =================
+        page3 = make_page("关于")
+        about = Gtk.Label()
+        about.set_markup(
+            f"<b>{GLib.markup_escape_text(APP_TITLE)}</b>\n"
+            f"版本 {__version__} · MIT 许可\n\n"
+            "交互与功能设计来自 Windows 版 SnapCtrlAlt\n"
+            "（作者 mimo、DeepSeek Harness 与 DannyParticle）。\n"
+            "本仓库是其 Linux 移植：覆盖层用 GTK3 + Cairo 绘制，\n"
+            "抓图走 X11（Xlib），纯 Wayland 会话回落到 XDG Portal。")
+        about.set_halign(Gtk.Align.START)
+        about.set_xalign(0)
+        about.set_line_wrap(True)
+        about.set_margin_top(10)
+        about.set_margin_bottom(8)
+        page3.pack_start(about, False, False, 0)
+
+        paths = Gtk.Label()
+        paths.set_markup(
+            "<small>配置文件 <tt>{}</tt>\n自动保存目录 {}\n"
+            "日志与诊断：<tt>snapctrlalt --selftest</tt> / "
+            "<tt>python3 tools/diagnose.py</tt></small>".format(
+                GLib.markup_escape_text(str(app_settings.config_path())),
+                GLib.markup_escape_text(
+                    str(self.cfg.get("save_dir") or app_settings.pictures_dir()))))
+        paths.set_halign(Gtk.Align.START)
+        paths.set_xalign(0)
+        paths.set_line_wrap(True)
+        paths.get_style_context().add_class("dim-label")
+        page3.pack_start(paths, False, False, 0)
+
+        # ================= 底部按钮（所有页共用）=================
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        actions.set_margin_top(12)
-        actions.set_margin_bottom(6)
-        actions.set_margin_start(18)
-        actions.set_margin_end(18)
+        actions.set_margin_top(10)
+        actions.set_margin_bottom(10)
+        actions.set_margin_start(12)
+        actions.set_margin_end(12)
         outer.pack_start(actions, False, False, 0)
         btn_shot = Gtk.Button(label="立即截图")
         btn_save = Gtk.Button(label="保存")
@@ -890,21 +928,16 @@ class App:
         actions.pack_end(btn_close, False, False, 0)
         actions.pack_end(btn_save, False, False, 0)
 
-        # ---- 底部信息 ----
-        info = Gtk.Label()
-        info.set_markup(
-            "<small>配置文件 <tt>{}</tt>\n自动保存目录 {}</small>".format(
-                GLib.markup_escape_text(str(app_settings.config_path())),
-                GLib.markup_escape_text(
-                    str(self.cfg.get("save_dir") or app_settings.pictures_dir()))))
-        info.set_halign(Gtk.Align.START)
-        info.set_xalign(0)
-        info.set_line_wrap(True)
-        info.set_margin_start(18)
-        info.set_margin_end(18)
-        info.set_margin_bottom(14)
-        info.get_style_context().add_class("dim-label")
-        outer.pack_start(info, False, False, 0)
+        # ---- 回调 ----
+        def refresh_hotkey_status(*_a) -> None:
+            got = dict(self.hotkeys.status)
+            if not got:
+                lbl_hotkey_status.set_text("尚未注册（保存后生效）")
+                return
+            ok = got.get("shot")
+            lbl_hotkey_status.set_text(
+                f"当前状态：截图热键 {'已生效 ✓' if ok else '注册失败（可能被别的程序占用）'}"
+                f"，退出热键 {'已生效 ✓' if got.get('quit') else '未生效'}")
 
         def browse(_b) -> None:
             d = Gtk.FileChooserDialog(title="选择保存目录", parent=win,
@@ -1003,8 +1036,8 @@ class App:
         # 用带「录制」按钮的行替换占位（截图热键是最常改的一项）
         hk_box = self._hotkey_capture("截图热键", str(self.cfg.get("hotkey", "")),
                                       lambda t: None)
-        grid.remove(holder)
-        grid.attach(hk_box, 1, 0, 1, 1)
+        g1.remove(holder)
+        g1.attach(hk_box, 1, 0, 1, 1)
         ent_hotkey = hk_box.get_children()[0]
 
         win.show_all()
