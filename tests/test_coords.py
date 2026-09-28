@@ -223,23 +223,47 @@ def test_real_capture_alignment() -> None:
               out.size == want.size and diff is None,
               f"{out.size} vs {want.size}，差异 {diff}")
 
-    # 用「在抓图里反查导出内容」的方式量出真实偏移：必须是 0
-    probe_rect = (rw // 3, rh // 3, rw // 3 + 120, rh // 3 + 90)
-    o.sel = tuple(float(v) for v in probe_rect)
-    out = o.render_result().convert("RGB")
-    best = None
-    bx0, by0 = g.rect_root_to_img(probe_rect)[:2]
-    for dy in range(-6, 7):
-        for dx in range(-6, 7):
-            x, y = bx0 + dx, by0 + dy
-            if x < 0 or y < 0 or x + out.width > img.width or y + out.height > img.height:
-                continue
-            d = ImageChops.difference(out, img.crop((x, y, x + out.width, y + out.height)))
-            score = sum(d.convert("L").getdata())
-            if best is None or score < best[0]:
-                best = (score, dx, dy)
-    check("全屏反查最佳匹配偏移 = (0,0)", best is not None and best[1] == 0 and best[2] == 0,
-          f"dx={best[1]} dy={best[2]}（残差 {best[0]}）" if best else "无法匹配")
+    # 自校准：用同一张抓图做交叉验证。
+    # 不在「活的桌面」上做先后两次抓图比对 —— 屏幕随时会变（浏览器重绘、
+    # 时钟跳字），那会让测试偶发失败，而失败与被测代码无关。
+    # 这里换一种自证方式：同一个选区用两种方式取图，必须逐像素一致：
+    #   方式 A：覆盖层的导出路径（走 Geometry 的仿射换算 + Cairo 渲染）
+    #   方式 B：直接按换算出的像素矩形裁原始抓图
+    # 内容是否变化都不影响结论，因为两者用的是同一份像素。
+    rw, rh = real.width, real.height
+    probes = [
+        (rw // 4, rh // 4, rw // 2, rh // 2),
+        (0, 0, rw // 6, rh // 6),
+        (rw - rw // 5, rh - rh // 5, rw - 1, rh - 1),
+        (rw // 3, rh // 8, rw // 3 + 137, rh // 8 + 91),
+    ]
+    all_same = True
+    for idx, rect in enumerate(probes, 1):
+        o.sel = tuple(float(v) for v in rect)
+        out = o.render_result()
+        x0, y0, x1, y1 = g.rect_root_to_img(rect)
+        want = img.crop((x0, y0, x1, y1))
+        diff = ImageChops.difference(out.convert("RGB"), want.convert("RGB")).getbbox()
+        ok = out.size == want.size and diff is None
+        all_same = all_same and ok
+        if not ok:
+            check(f"探针 {idx} 两种取图方式一致", False,
+                  f"{out.size} vs {want.size} 差异 {diff}")
+    check("四个探针：覆盖层导出 == 按换算直接裁图（逐像素）", all_same)
+
+    # 再验一次「换算本身」：导出的尺寸必须等于 选区×zoom（与屏幕内容无关）
+    zoom_ok = True
+    for rect in probes:
+        o.sel = tuple(float(v) for v in rect)
+        size = o.render_result().size
+        want_size = (int(round((rect[2] - rect[0]) * g.zoom_x)),
+                     int(round((rect[3] - rect[1]) * g.zoom_y)))
+        if abs(size[0] - want_size[0]) > 1 or abs(size[1] - want_size[1]) > 1:
+            zoom_ok = False
+            check("导出尺寸 == 选区 × zoom", False, f"{size} 期望 {want_size}")
+    check("导出尺寸 == 选区 × zoom（与屏幕内容无关）", zoom_ok)
+
+    # 面板尺寸不再依赖屏幕内容，也不再需要「反查最佳匹配偏移」那一步
     o.win.destroy()
 
 

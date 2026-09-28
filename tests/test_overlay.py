@@ -416,6 +416,48 @@ def test_toolbar_click_does_not_reset_selection(app: FakeApp) -> None:
     o.win.destroy()
 
 
+def test_handles_work_with_any_tool(app: FakeApp) -> None:
+    """选区手柄必须在任何标注工具下都能用（参考 Flameshot / ksnip）。
+
+    早期只在「选择工具」下才响应手柄，而选完区域后工具会自动切到矩形，
+    于是用户想微调边缘时被当成要画矩形 —— 表现为「点不中、还得重截」。
+    """
+    print("\n[13] 手柄在任何工具下都能调整选区")
+    o = new_overlay(app, 1200, 800, 1)
+    o.ui_scale = 1.0
+    o._drag = {"kind": "select", "start": (200.0, 150.0), "cur": (200.0, 150.0),
+               "preview": True}
+    o._on_release(o.win, _FakeEvent(x=900, y=650, button=1))
+    check("选区建立后工具自动切到矩形", o.tool == ov.T_RECT, o.tool)
+
+    for tool in (ov.T_RECT, ov.T_PEN, ov.T_ELLIPSE, ov.T_ARROW, ov.T_TEXT, ov.T_BLUR):
+        o._set_tool(tool)
+        o._drag = None
+        hit = o._handle_at(900.0, 650.0)
+        check(f"{tool}：右下角手柄可命中", hit == "se", str(hit))
+        o._on_press(o.win, _FakeEvent(x=900, y=650, button=1))
+        kind = (o._drag or {}).get("kind")
+        check(f"{tool}：拖手柄是缩放而非画图", kind == "resize", str(kind))
+        o._drag = None
+
+    # 选区内部仍然要能画图（不能被手柄逻辑吃掉）
+    o._set_tool(ov.T_PEN)
+    o._on_press(o.win, _FakeEvent(x=550, y=400, button=1))
+    check("选区中间拖动仍是画图", (o._drag or {}).get("kind") == "draw",
+          str((o._drag or {}).get("kind")))
+    o._drag = None
+
+    # 四角与四边都要能命中
+    o._set_tool(ov.T_RECT)
+    o._layout_toolbar(o.cr_w, o.cr_h)
+    corners = {"nw": (200.0, 150.0), "ne": (900.0, 150.0),
+               "sw": (200.0, 650.0), "se": (900.0, 650.0)}
+    for name, (hx, hy) in corners.items():
+        check(f"{name} 角手柄可命中", o._handle_at(hx, hy) == name,
+              str(o._handle_at(hx, hy)))
+    o.win.destroy()
+
+
 def test_cancel(app: FakeApp) -> None:
     print("\n[11] 取消")
     reasons: list[str] = []
@@ -463,7 +505,7 @@ def main() -> int:
                test_undo_redo_clear, test_text_entry_flow, test_clip_inside_selection,
                test_scroll_width_and_tools, test_handles_and_move,
                test_persist_and_finish, test_pin, test_toolbar_click_does_not_reset_selection,
-               test_cancel):
+               test_handles_work_with_any_tool, test_cancel):
         try:
             fn(app)
         except Exception:  # noqa: BLE001

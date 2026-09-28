@@ -433,6 +433,23 @@ def _detect_ui_scale(cfg: dict) -> float:
         return 1.0
 
 
+def _make_resize_cursors() -> dict:
+    """8 个方位的手柄光标；拿不到就留空（不影响功能）。"""
+    names = {"nw": "nw-resize", "n": "n-resize", "ne": "ne-resize", "e": "e-resize",
+             "se": "se-resize", "s": "s-resize", "sw": "sw-resize", "w": "w-resize"}
+    out: dict = {}
+    try:
+        disp = Gdk.Display.get_default()
+    except Exception:  # noqa: BLE001
+        return out
+    for key, name in names.items():
+        try:
+            out[key] = Gdk.Cursor.new_from_name(disp, name)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def _fallback_geometry(img_w: int, img_h: int, box=None, scale: int = 0):
     """拿不到 X11 标定时的退化几何。
 
@@ -581,7 +598,10 @@ class ShotOverlay:
         )
         self.win.add(self.area)
 
-        self._cursor_obj = Gdk.Cursor.new_from_name(Gdk.Display.get_default(), "crosshair")
+        self._crosshair = Gdk.Cursor.new_from_name(Gdk.Display.get_default(), "crosshair")
+        self._cursor_obj = self._crosshair
+        self._active_cursor = self._crosshair
+        self._resize_cursors = _make_resize_cursors()
         self.area.connect("draw", self._on_draw)
         self.win.connect("button-press-event", self._on_press)
         self.win.connect("button-release-event", self._on_release)
@@ -838,12 +858,10 @@ class ShotOverlay:
             self._draw_dim_bands(cr, x0, y0, x1, y1)
 
             self._draw_size_label(cr, x0, y0, x1, y1)
-            if self._drag and self._drag.get("kind") == "select":
-                self._draw_handles(cr, x0, y0, x1, y1)
-            else:
+            if not (self._drag and self._drag.get("kind") == "select"):
                 self._draw_outline(cr, x0, y0, x1, y1)
-                if self.tool == T_SELECT or self.mode == "select":
-                    self._draw_handles(cr, x0, y0, x1, y1)
+            # 手柄常显：任何标注工具下都能拖拽调整选区
+            self._draw_handles(cr, x0, y0, x1, y1)
 
             if self._drag and self._drag.get("preview"):
                 self._draw_preview(cr, self._drag)
@@ -1477,6 +1495,8 @@ class ShotOverlay:
         self._verify_pointer(event)
         x, y = self._pos(event)
         self._cursor = (x, y)
+        if self.sel is not None and self.mode == "draw":
+            self._update_resize_cursor(*self._to_img(x, y))
         prev_hover = self._hover
         self._hover = self._button_at(x, y) if (self.sel is not None and self.mode == "draw") else None
         if self._hover is not None:
@@ -1644,7 +1664,14 @@ class ShotOverlay:
         self._redraw()
 
     def _handle_at(self, ix, iy) -> str | None:
-        if not self.sel or self.tool != T_SELECT or self.mode != "draw":
+        """命中选区的 8 个调整手柄。
+
+        **与当前标注工具无关**：参考 Flameshot / ksnip 的做法，选区边框随时可
+        拖拽调整。早期只在「选择工具」下才响应，导致用户选完区域（工具已自动
+        切到矩形）想微调边缘时，被当成要画矩形 —— 表现出来就是「点不中、
+        还得重截」。
+        """
+        if not self.sel or self.mode != "draw" or self._drag is not None:
             return None
         names = ["nw", "n", "ne", "e", "se", "s", "sw", "w"]
         tol = float(HANDLE)
@@ -1652,6 +1679,36 @@ class ShotOverlay:
             if abs(ix - hx) <= tol and abs(iy - hy) <= tol:
                 return name
         return None
+
+    def _update_resize_cursor(self, ix, iy) -> None:
+        """靠近手柄时把光标换成对应的缩放箭头（Flameshot 同款反馈）。"""
+        if self._cursor_obj is None or self._closed:
+            return
+        name = self._handle_at(ix, iy)
+        if name is None:
+            # 在选区内侧边缘也算「可拖边」：给一点余量，手感更好
+            name = self._edge_at(ix, iy)
+        want = self._resize_cursors.get(name or "", self._crosshair)
+        if want is not None and want is not self._active_cursor:
+            try:
+                self.area.get_window().set_cursor(want)
+                self._active_cursor = want
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _edge_at(self, ix, iy) -> str | None:
+        """选区边框附近（含内侧一点）的方位，用于放大可拖拽区域。"""
+        if not self.sel or self.mode != "draw":
+            return None
+        x0, y0, x1, y1 = self.sel
+        m = float(HANDLE) + 2
+        if not (x0 - m <= ix <= x1 + m and y0 - m <= iy <= y1 + m):
+            return None
+        horiz = "w" if ix <= x0 + m else ("e" if ix >= x1 - m else "")
+        vert = "n" if iy <= y0 + m else ("s" if iy >= y1 - m else "")
+        if horiz and vert:
+            return vert + horiz if vert == "n" else vert + horiz
+        return horiz or vert or None
 
     def _apply_resize(self, ix, iy) -> None:
         if not self._drag or not self.sel:

@@ -1,3 +1,20 @@
+snapctrlalt (1.2.5) unstable; urgency=medium
+
+  * The selection handles now work under every annotation tool, and take
+    priority over drawing near the border.  They used to respond only while the
+    select tool was active, but releasing a selection switches the tool to
+    rectangle, so trying to fine tune an edge drew a rectangle instead.  This
+    follows how Flameshot and ksnip behave: the selection stays adjustable at
+    any time, and only the middle of the region draws.
+  * The handles are always visible now (they used to disappear with any tool
+    other than select, so there was nothing to aim at), and the pointer turns
+    into the matching resize arrow near an edge or corner.
+  * tests/test_coords.py no longer compares two grabs of the live desktop.  It
+    cross-checks the overlay export against a direct crop of the same capture,
+    so a screen that changes between grabs can no longer fail the suite.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Sun, 27 Sep 2026 02:50:00 +0800
+
 snapctrlalt (1.2.4) unstable; urgency=medium
 
   * Fixed clicks on the annotation toolbar resetting the selection.  A click
