@@ -610,6 +610,9 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         # 否则用户在对话框上的点击会被当成「点在选区外」，直接把这次截图取消掉
         # ——这就是「选个颜色就把截图任务退出了」的原因。
         self._modal_open = False
+        self._palette_open = False
+        self._palette_rect: tuple[float, float, float, float] | None = None
+        self._palette_hover: tuple[int, int] | None = None
 
         # 窗口
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -989,6 +992,8 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             self._draw_magnifier(cr, uw, uh)
         if self._tip_text:
             self._draw_tip(cr, uw, uh)
+        # 取色面板画在最上层（在 UI 缩放上下文里，坐标用 UI 单位）
+        self._draw_palette(cr)
         cr.restore()
         self._frames += 1
         self._frame_ms = (time.perf_counter() - t0) * 1000.0
@@ -1563,6 +1568,13 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
     def _on_motion(self, _w, event) -> bool:
         if self._closed or self._modal_open:
             return False
+        if self._palette_open:
+            _x, _y = self._pos(event)
+            _ix, _iy = self._to_img(_x, _y)
+            h = self._palette_hit(_ix, _iy)
+            if h != self._palette_hover:
+                self._palette_hover = h
+                self._redraw()
         self._verify_pointer(event)
         x, y = self._pos(event)
         self._cursor = (x, y)
@@ -1594,6 +1606,22 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
             return False
         x, y = self._pos(event)
         ix, iy = self._to_img(x, y)
+
+        # 取色面板优先：命中色块就取色，点在面板内其他地方不穿透
+        if self._palette_open:
+            hit = self._palette_hit(ix, iy)
+            rect = self._palette_rect
+            if hit is not None:
+                self._set_color(self._palette_color(*hit))
+                self._palette_open = False
+                self.status_cb(f"已取色 {self.color.upper()}")
+                self._redraw()
+                return True
+            if rect and rect[0] <= ix <= rect[0] + rect[2] \
+                    and rect[1] <= iy <= rect[1] + rect[3]:
+                return True                    # 点在面板空白处：不穿透
+            self._palette_open = False         # 点在外面：收起面板
+            self._redraw()
 
         # 双击 = 选整屏（QQ 截图行为）
         if event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS and event.button == 1:
@@ -1887,68 +1915,124 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
     def _set_color(self, c: str) -> None:
         self.color = c
 
+    # ------------------------------------------------ 取色面板（画在覆盖层上）
+    #
+    # 为什么不用 Gtk.ColorChooserDialog：覆盖层是全屏置顶窗口，GTK 对话框会被它
+    # 压在下面 —— 用户看不到、点不到，只觉得"卡住了，按 Esc 才恢复"（实测）。
+    # 画布上的面板是覆盖层自己画的一部分，天然在最上层，也没有独立的焦点问题。
+
+    _PALETTE_COLS = 10
+    _PALETTE_ROWS = 6
+    _PALETTE_SW = 26          # 每个色块的显示尺寸（会乘 ui_scale）
+
     def _pick_custom_color(self) -> None:
-        """选自定义颜色。
-
-        对话框打开期间把整个覆盖层冻结（``_modal_open``）：否则用户在对话框上的
-        每次点击都会落到覆盖层的处理逻辑里，被当成「点在选区外」→ 直接取消这次
-        截图。用户要多种颜色反复标注时，那等于每换一次颜色就丢一次截图。
-
-        对话框本身用 ``run()``（模态、自带主循环），并在结束后恢复覆盖层的
-        焦点与状态；取消时还原原来的颜色。
-        """
-        if self._color_dlg is not None:
-            self._color_dlg.present()
+        """打开画布上的取色面板（左上角贴近工具栏）。"""
+        if self._palette_open:
+            self._palette_open = False
+            self._redraw()
             return
-        self._modal_open = True
-        self._focus_guard = True
-        self._color_before = self.color
-        dlg = Gtk.ColorChooserDialog(title="选择标注颜色", parent=self.win)
-        dlg.set_modal(False)
-        dlg.set_keep_above(True)
-        dlg.set_use_alpha(False)
-        try:
-            dlg.set_transient_for(self.win)
-        except Exception:  # noqa: BLE001
-            pass
-        rgba = Gdk.RGBA()
-        rgba.parse(self.color)
-        dlg.set_rgba(rgba)
-        # 实时预览：拖动取色时覆盖层的当前色跟着变
-        dlg.connect("notify::rgba",
-                    lambda d, _p: self._set_color(self._rgba_hex(d.get_rgba())))
-        dlg.connect("destroy", lambda *_: setattr(self, "_color_dlg", None))
-        self._color_dlg = dlg
-        dlg.show_all()
-        dlg.present()
-        try:
-            resp = dlg.run()
-        except Exception as e:  # noqa: BLE001
-            print(f"[overlay] 颜色对话框异常: {e}", flush=True)
-            resp = Gtk.ResponseType.CANCEL
-        self._on_color_response(dlg, resp)
-
-    def _on_color_response(self, dlg, resp) -> None:
-        if resp == Gtk.ResponseType.OK:
-            self._set_color(self._rgba_hex(dlg.get_rgba()))
-            self.status_cb(f"已选颜色 {self.color.upper()}")
-        else:
-            self._set_color(self._color_before)
-        self._color_dlg = None
-        dlg.destroy()
-        # 解冻：恢复焦点与事件处理
-        self._modal_open = False
-        self._focus_guard = False
-        self.win.present()
-        self.area.grab_focus()
+        self._palette_open = True
+        self._palette_hover: tuple[int, int] | None = None
+        us = self.ui_scale
+        sw = self._PALETTE_SW * us
+        pad = 8 * us
+        w = self._PALETTE_COLS * sw + pad * 2
+        h = self._PALETTE_ROWS * sw + pad * 2 + 26 * us
+        # 放在工具栏下方；越界就回到屏幕内
+        bx, by, _bw, bh = self._tb_pos or (0.0, 0.0, 0.0, 0.0)
+        px = bx
+        py = by + bh + 8 * us
+        px = min(max(px, 8.0), max(8.0, self.cr_w - w - 8.0))
+        py = min(max(py, 8.0), max(8.0, self.cr_h - h - 8.0))
+        self._palette_rect = (px, py, w, h)
+        self.status_cb("点击取色 · 再点一次色环可收起")
         self._redraw()
 
+    def _palette_hit(self, x: float, y: float) -> tuple[int, int] | None:
+        """(x, y) 命中哪个色块；不在面板内返回 None。"""
+        rect = getattr(self, "_palette_rect", None)
+        if not rect or not self._palette_open:
+            return None
+        px, py, w, h = rect
+        us = self.ui_scale
+        sw = self._PALETTE_SW * us
+        pad = 8 * us
+        gx = int((x - px - pad) // sw)
+        gy = int((y - py - pad) // sw)
+        if 0 <= gx < self._PALETTE_COLS and 0 <= gy < self._PALETTE_ROWS:
+            return gx, gy
+        del w, h
+        return None
+
     @staticmethod
-    def _rgba_hex(c) -> str:
-        return "#{:02x}{:02x}{:02x}".format(
-            max(0, min(255, int(round(c.red * 255)))),
-            max(0, min(255, int(round(c.green * 255)))),
-            max(0, min(255, int(round(c.blue * 255)))))
+    def _palette_color(gx: int, gy: int) -> str:
+        """色块索引 → 颜色。最后一排是灰阶，其余是色相×明度网格。"""
+        cols, rows = ShotOverlay._PALETTE_COLS, ShotOverlay._PALETTE_ROWS
+        if gy == rows - 1:
+            v = int(round(255 * gx / (cols - 1)))
+            return f"#{v:02x}{v:02x}{v:02x}"
+        hue = gx / float(cols) * 360.0
+        val = 1.0 - gy / float(rows - 1) * 0.75      # 越往下越深
+        sat = 0.35 + 0.65 * (gx % 2)
+        import colorsys
+
+        r, g, b = colorsys.hsv_to_rgb(hue / 360.0, sat, val)
+        return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+
+    def _draw_palette(self, cr) -> None:
+        """画取色面板。
+
+        ``_palette_rect`` 存的是**画布坐标**（与命中测试一致），而这里的上下文
+        已经按 ui_scale 缩放过（与工具栏同一套约定），所以绘制前统一除回来。
+        """
+        if not self._palette_open:
+            return
+        rect = getattr(self, "_palette_rect", None)
+        if not rect:
+            return
+        us = max(0.1, self.ui_scale)
+        px, py = rect[0] / us, rect[1] / us
+        sw = self._PALETTE_SW
+        pad = 8.0
+        cols, rows = self._PALETTE_COLS, self._PALETTE_ROWS
+        cr.save()
+        w = cols * sw + pad * 2
+        h = rows * sw + pad * 2 + 26
+        self._rounded_rect(cr, px, py, w, h, 8)
+        cr.set_source_rgba(0.949, 0.949, 0.969, 0.99)
+        cr.fill_preserve()
+        cr.set_line_width(1)
+        cr.set_source_rgba(0.78, 0.78, 0.80, 1.0)
+        cr.stroke()
+        for gy in range(rows):
+            for gx in range(cols):
+                col = _rgba(self._palette_color(gx, gy))
+                x = px + pad + gx * sw
+                y = py + pad + gy * sw
+                cr.rectangle(x + 1, y + 1, sw - 2, sw - 2)
+                cr.set_source_rgba(col[0], col[1], col[2], 1)
+                cr.fill()
+                if (gx, gy) == self._palette_hover:
+                    cr.set_line_width(2.5)
+                    cr.set_source_rgba(0.04, 0.52, 1.0, 1)
+                    cr.rectangle(x + 1, y + 1, sw - 2, sw - 2)
+                    cr.stroke()
+        # 底部：当前色预览 + 当前值
+        cur = _rgba(self.color)
+        ybase = py + pad + rows * sw + 4
+        cr.rectangle(px + pad, ybase, 22, 18)
+        cr.set_source_rgba(cur[0], cur[1], cur[2], 1)
+        cr.fill_preserve()
+        cr.set_line_width(1)
+        cr.set_source_rgba(0.55, 0.55, 0.58, 1)
+        cr.stroke()
+        layout = PangoCairo.create_layout(cr)
+        layout.set_font_description(_font(11))
+        layout.set_text(f"当前 {self.color.upper()}", -1)
+        cr.set_source_rgba(0.11, 0.11, 0.12, 1)
+        cr.move_to(px + pad + 28, ybase)
+        PangoCairo.show_layout(cr, layout)
+        cr.restore()
 
     # ------------------------------------------------------------ 文本
 
@@ -2246,6 +2330,7 @@ class ShotOverlay(tb_mod.AnnotationRenderer):
         if self._closed:
             return
         self._closed = True
+        self._palette_open = False
         self._finishing = True
         self._tip_text = ""
         if self._tb_window is not None:

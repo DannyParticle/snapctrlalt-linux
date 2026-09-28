@@ -1,3 +1,16 @@
+snapctrlalt (1.3.9) unstable; urgency=medium
+
+  * The overlay presentation now uses an in-canvas colour palette instead of a
+    Gtk.ColorChooserDialog.  A dialog parented to the fullscreen overlay kept
+    ending up underneath it (invisible and unclickable) and the modal loop could
+    leave the overlay stuck until Escape was pressed; a plain window, by
+    contrast, is unaffected.  The palette is drawn by the overlay itself -- 60
+    swatches plus a greyscale row, hover highlight and a live value readout --
+    so it is always on top, never steals focus, and never interrupts a capture.
+  * The editor presentation keeps using the system dialog, which works there.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 03:00:00 +0800
+
 snapctrlalt (1.3.8) unstable; urgency=medium
 
   * Choosing a colour no longer throws the capture away.  While the colour
