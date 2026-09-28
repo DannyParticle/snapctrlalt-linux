@@ -1,3 +1,16 @@
+snapctrlalt (1.4.3) unstable; urgency=medium
+
+  * The vertical toolbar no longer grows taller than the window.  Wrapping
+    cannot help (the total length is invariant), so the editor picks an
+    overall scale that fits the window height (down to 0.7) and clamps the bar
+    to the available height, with a scrollbar for the rest.  The canvas now
+    scales to the space left by the toolbar and action buttons.
+  * Fixed a units bug: window allocations are logical pixels while the
+    toolbar/canvas are device pixels (GDK scale 2), so the vertical bar was
+    computed twice as tall as the window and appeared to be missing.
+
+ -- dsh (deepseek harness) <dsh@localhost>  Tue, 29 Sep 2026 12:05:00 +0800
+
 snapctrlalt (1.4.2) unstable; urgency=medium
 
   * Fixed layout 3 (editor window) side switching: the corner buttons were

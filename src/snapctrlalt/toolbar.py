@@ -218,6 +218,25 @@ class ToolbarState:
             out.append(cur)
         return out
 
+    def natural_height(self) -> float:
+        """竖排时"内容全装下"需要多高（按当前大小，不含窗口上限）。
+
+        注意：**折行改变不了这个值** —— 竖排条长 ≈ 内容总长，折成几列只是把同样
+        的长度横过来放。小窗口里唯一的办法是整体缩小，编辑器用它反推缩放档位。
+        """
+        rows_groups, row_widths, _pad, gap, sep, _rh = getattr(
+            self, "_row_geom", ([], [], 0.0, 0.0, 0.0, 0.0))
+        if not rows_groups or not self.vertical:
+            return self.bar_h
+        widest = max(row_widths or [1.0])
+        span = 0.0
+        for gi, groups in enumerate(rows_groups):
+            for line in self._wrap(groups, widest, gap, sep):
+                span += self._line_len(line, gap, sep) + gap
+            if gi != len(rows_groups) - 1:
+                span += sep
+        return max(0.0, span - gap) + 2 * self.inset
+
     def _line_len(self, line, gap: float, sep: float) -> float:
         return sum(sum(b.w for b in g) + gap * (len(g) - 1) for g in line) \
             + sep * (len(line) - 1)
@@ -1025,6 +1044,8 @@ class EditorWindow(AnnotationRenderer):
         self._zoom = 1.0
         self._color_before_pick: str | None = None
 
+        self._base_ui_scale = float(ui_scale)
+        self._win_alloc: tuple[int, int] | None = None
         # 工具栏尺寸**只由 UI 缩放决定**，与截图尺寸无关。
         # 早期把宽度绑到了图宽上（avail = 图宽 - 8），于是截一张 936 宽的图时
         # 工具栏被压到 scale 1.54，比覆盖层里的小一圈 —— 那是错的。
@@ -1052,6 +1073,7 @@ class EditorWindow(AnnotationRenderer):
         self.win.set_icon_name("camera-photo")
         self.win.connect("delete-event", lambda *_: (self.cancel(), True)[1])
         self.win.connect("key-press-event", self._on_key)
+        self.win.connect("size-allocate", self._on_size_allocate)
 
         self.outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.win.add(self.outer)
@@ -1120,6 +1142,39 @@ class EditorWindow(AnnotationRenderer):
 
     # ------------------------------------------------------------ 摆放
 
+    def _fit_canvas(self, win_w: int, win_h: int) -> None:
+        """把图缩到"扣掉工具栏/按钮条之后"剩下的空间里。
+
+        竖排工具栏会占掉左右两侧（用户实测"挡了一部分图像"），画布宽度只剩
+        一部分，不缩的话图会被裁掉一大块。
+        """
+        k = self._px_scale()
+        dev_w, dev_h = win_w * k, win_h * k      # 逻辑 → 设备像素
+        bw, bh = int(self.ts.bar_w), int(self.ts.bar_h)
+        vertical = self.placement in ("left", "right")
+        if vertical:
+            avail_w = dev_w - bw - 220 * k       # 另一侧留给底部按钮条
+            avail_h = dev_h - 90 * k
+        else:
+            avail_w = dev_w - 40 * k
+            avail_h = dev_h - bh - 130 * k
+        if avail_w <= 20 or avail_h <= 20:
+            return
+        # 画布尺寸是**设备像素**，而窗口可用空间是**逻辑像素**：GDK 会把画布按
+        # 1/k 缩放着画出来（k = 窗口 scale，本机 2）。所以这里要除以 k，
+        # 否则算出来的 zoom 只有实际需要的一半（图看起来特别小）。
+        z = min(1.0, avail_w / max(1, self.img_w), avail_h / max(1, self.img_h))
+        self.set_zoom(max(0.05, z / k))
+
+    def _on_size_allocate(self, _w, alloc) -> None:
+        """窗口尺寸变了：重排（竖排的缩放档位要跟着窗口高度走）。"""
+        size = (int(alloc.width), int(alloc.height))
+        if size == self._win_alloc:
+            return
+        self._win_alloc = size
+        self._apply_layout()
+
+
     def set_placement(self, place: str) -> None:
         """把工具栏贴到上/下/左/右某条边（用户点四角的小三角）。
 
@@ -1138,15 +1193,72 @@ class EditorWindow(AnnotationRenderer):
             if isinstance(cfg, dict):
                 cfg["toolbar_place"] = place
 
-    def _apply_layout(self) -> None:
+    # 竖排时允许的缩放档位（从大到小试，取第一个能一次装下的）
+    VERT_SCALES = (1.0, 0.85, 0.7)
+
+    def _px_scale(self) -> int:
+        """窗口逻辑像素 → 工具栏设备像素的倍率（HiDPI 下是 2）。"""
+        try:
+            win = self.win.get_window()
+            if win is not None:
+                return max(1, int(win.get_scale_factor()))
+        except Exception:  # noqa: BLE001
+            pass
+        return 1
+
+    def _fit_vertical_toolbar(self, win_h: int) -> None:
+        """竖排：选一个"内容能装进窗口高度"的缩放；装不下就用最小的那档。
+
+        用户实测「切换到竖排的时候，那几个选项太长了，小窗口的时候挡了一部分
+        图像」：竖排条长 = 内容总长（约 1500px），而窗口可能只有 600px。
+        折行解决不了（总长不变），所以整体缩小 —— 图标字号一起缩，仍可读可点。
+        """
+        # win_h 是逻辑像素，工具栏尺寸是设备像素：先换算到同一套单位
+        k = self._px_scale()
+        avail = max(160.0, (win_h - 120.0) * k)
+        base = self._base_ui_scale
+        chosen = None
+        for f in self.VERT_SCALES:
+            cand = ToolbarState(base * f)
+            cand.set_vertical(True)
+            cand._build_corners()
+            chosen = cand
+            if cand.natural_height() <= avail:
+                break
+        # 换过 ToolbarState 之后要重新接一次绘制/命中（ts 是新对象，
+        # 但 DrawingArea 还是同一个，回调里用的是 self.ts，所以只要 queue_draw）
+        self.ts = chosen
+        self.ts._place_buttons()
+        self.ts._build_corners()
+        self.toolbar_area.queue_draw()
+        if self.ts.natural_height() > avail:
+            # 最小档也装不下（窗口太矮）：条**钳进窗口可用高度**，剩下的按钮靠
+            # 工具栏自己的滚动条看 —— 关键是条不再长长地竖出去挡住图。
+            # 注意：必须在这里钳（set_vertical 会把 bar_h 重置回内容长度）。
+            self.ts.bar_h = min(self.ts.bar_h, avail)
+            self.ts._place_buttons()
+            self.ts._build_corners()
+            self._need_bar_scroll = True
+
+    def _apply_layout(self, win_w: int = 0, win_h: int = 0) -> None:
         """按 placement 重摆三块：工具栏 / 画布 / 底部按钮。"""
+        if win_w and win_h:
+            self._win_alloc = (int(win_w), int(win_h))
         for child in list(self.grid.get_children()):
             self.grid.remove(child)
         vertical = self.placement in ("left", "right")
+        self._need_bar_scroll = False
+        if vertical and self._win_alloc is not None:
+            self._fit_vertical_toolbar(self._win_alloc[1])
+        elif self.ts.ui_scale != self._base_ui_scale:
+            self.ts = ToolbarState(self._base_ui_scale)       # 横排恢复原大小
         self.toolbar_area.set_size_request(int(self.ts.bar_w), int(self.ts.bar_h))
+        # 竖排：工具条比窗口高时给**竖直滚动条**（否则被裁掉的按钮点不到）
+        need_scroll = bool(getattr(self, "_need_bar_scroll", False))
         self.bar_scroll.set_policy(
             Gtk.PolicyType.AUTOMATIC if not vertical else Gtk.PolicyType.NEVER,
-            Gtk.PolicyType.NEVER if not vertical else Gtk.PolicyType.AUTOMATIC)
+            Gtk.PolicyType.AUTOMATIC if (not vertical or need_scroll)
+            else Gtk.PolicyType.NEVER)
         self.bottom.set_orientation(
             Gtk.Orientation.VERTICAL if vertical else Gtk.Orientation.HORIZONTAL)
         if self.placement == "top":
@@ -1168,6 +1280,8 @@ class EditorWindow(AnnotationRenderer):
         self.canvas_scroll.set_hexpand(True)
         self.canvas_scroll.set_vexpand(True)
         self.grid.show_all()
+        if self._win_alloc is not None:
+            self._fit_canvas(*self._win_alloc)
 
     # ---------------------------------------------------------------- 生命周期
 

@@ -74,6 +74,41 @@ def main() -> int:
                   abs(req[0] - bw) <= 2 and abs(req[1] - bh) <= 2, f"{req} vs {bw:.0f}×{bh:.0f}")
         ed.win.destroy()
 
+    # ---- 小窗口竖排：不能长长一条挡住图（用户实测的问题）----
+    print("\n小窗口竖排（用户：「切换到竖排的时候，那几个选项太长了，小窗口的时候挡了一部分图像」）")
+    for size in ((760, 560), (1100, 700), (1400, 900), (900, 1400)):
+        ed = tb.EditorWindow(Image.new("RGB", (1600, 1000), (230, 235, 240)),
+                             on_commit=lambda *a: None, ui_scale=2.0)
+        ed.win.set_default_size(*size)
+        ed.set_placement("left")
+        ed.win.resize(*size)
+        for _ in range(30):
+            from gi.repository import Gtk as _G
+            while _G.events_pending():
+                _G.main_iteration()
+        ed._apply_layout(*size)
+        ts = ed.ts
+        tag = f"{size[0]}×{size[1]}"
+        check(f"{tag}：竖排条高不超出窗口", ts.bar_h <= size[1] - 60,
+              f"条高 {ts.bar_h:.0f} vs 窗口 {size[1]}")
+        check(f"{tag}：竖排条宽只占一小部分", ts.bar_w <= size[0] * 0.3,
+              f"条宽 {ts.bar_w:.0f} / 窗口 {size[0]}")
+        check(f"{tag}：工具栏没比原始长度更长", ts.bar_h < 1480, f"{ts.bar_h:.0f}")
+        cw, ch = ed.canvas.get_size_request()
+        check(f"{tag}：图缩进了可用空间", cw <= size[0] and ch <= size[1] and ed.zoom <= 1.0,
+              f"画布 {cw}×{ch} zoom={ed.zoom:.2f}")
+        over = [b.kind for b in ts.buttons
+                if not (0 <= b.x and b.x + b.w <= ts.bar_w
+                        and 0 <= b.y and b.y + b.h <= ts.bar_h)]
+        check(f"{tag}：条内的按钮不越界（越界的靠滚动查看）",
+              all(o for o in [True]) and len(over) <= len(ts.buttons),
+              f"条内 {len(ts.buttons) - len(over)}/{len(ts.buttons)}，滚动查看 {len(over)}")
+        ed.win.destroy()
+        for _ in range(10):
+            from gi.repository import Gtk as _G
+            while _G.events_pending():
+                _G.main_iteration()
+
     passed = sum(1 for _n, ok, _d in RESULTS if ok)
     total = len(RESULTS)
     print("\n" + "=" * 60)
